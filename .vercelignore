@@ -1,0 +1,18 @@
+# 本地数据库
+*.db
+*.sqlite
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# 测试
+tests/
+pytest_cache/
+
+# 文档和 demo
+docs/
+run_xiaomi_demo.py
+xiaomi_research_results.json
