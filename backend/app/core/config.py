@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     AGENTSOCIETY_ENABLED: bool = True
     AGENTSOCIETY_MAP_PATH: str = ""           # 地图文件路径
     AGENTSOCIETY_DEFAULT_LLM: str = "gpt-4o-mini"
+    # AGENTSOCIETY_DEFAULT_LLM: str = "deepseek-chat"
     AGENTSOCIETY_MAX_AGENTS: int = 100
 
     # AgentSociety 远程 API 配置（如果使用远端实例）
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     # ── LLM 配置 ──────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
+    # OPENAI_API_BASE: str = "https://api.zhizengzeng.com/v1"
 
     # ── Auth 配置 ─────────────────────────────────────────────────
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24h
