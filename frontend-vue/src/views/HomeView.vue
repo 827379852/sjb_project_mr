@@ -640,6 +640,7 @@ async function triggerScout() {
   let currentPersonaBlock: HTMLElement | null = null
   let currentPersonaId = ''
   let totalPosts = 0
+  let scoutDoneFlag = false  // 标记 SSE 是否已发送完成事件
 
   function buildPersonaBlock(pId: string, pName: string): HTMLElement {
     const block = document.createElement('div')
@@ -791,8 +792,9 @@ async function triggerScout() {
             }
             updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成（${count} 条帖子）`)
           } else if (event.type === 'step' && event.step === 'build_persona' && event.status === 'done') {
-            // 标记完成，footer 统一在 SSE 结束后设置
-            updateStepCardStatus('done')
+            // 记录完成状态，暂不更新 DOM（等 SSE 结束后统一处理）
+            // 通过 flag 标记，等 SSE 结束后设置 stepCard 状态
+            scoutDoneFlag = true
           }
         } catch (e) {
           console.warn('[Scout] SSE parse error, keeping buffer. raw:', eventStr?.substring(0, 200), e)
@@ -801,24 +803,23 @@ async function triggerScout() {
       }
     }
 
+    // 只有当 SSE 发送了完成事件时才更新状态
+    if (scoutDoneFlag) {
+      updateStepCardStatus('done')
+    }
     researchStore.updateStepProgress('scout', 'done')
     researchStore.updateStepProgress('interview', 'active')
-    // SSE 结束后，统一设置 stepCard footer（确保响应式更新）
-    const lastCard = messages.value[messages.value.length - 1]
-    if (lastCard?.type === 'stepCard' && lastCard.stepData) {
-      lastCard.stepData.footer = `
-        <div class="confirm-block">
-          <div class="confirm-question">社媒侦察完成 ✓ 每个人设已根据真实用户声音增强</div>
-          <div class="confirm-question" style="font-size:12px;color:var(--text-dim);margin-top:6px">建议进行深度访谈来挖掘更深层的动机</div>
-          <div class="confirm-options">
-            <button class="confirm-btn primary" onclick="window.triggerAutoInterview && window.triggerAutoInterview()">🎤 自动深度访谈</button>
-            <button class="confirm-btn" onclick="window.triggerReport && window.triggerReport()">📊 直接生成报告</button>
-          </div>
-        </div>
-      `
-      lastCard.stepData.status = 'done'
-    }
-    // 等 DOM 更新完成后再滚动
+    // 等待 DOM 稳定后再追加引导消息
+    await nextTick()
+    await nextTick()
+    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
+    appendConfirmMsg(
+      '社媒侦察完成 ✓ 每个人设已根据真实用户声音增强。建议进行深度访谈来挖掘更深层的动机。',
+      [
+        { label: '🎤 自动深度访谈', action: 'window.triggerAutoInterview && window.triggerAutoInterview()' },
+        { label: '📊 直接生成报告', action: 'window.triggerReport && window.triggerReport()' }
+      ]
+    )
     await nextTick()
     scrollToBottom()
   } catch (e) {
@@ -842,6 +843,7 @@ async function triggerAutoInterview() {
   let completedPersonas = 0
   const questions: string[] = []
   const personaInterviews: Record<string, { name: string; index: number; qaList: { question: string; answer: string }[]; done: boolean }> = {}
+  let interviewDoneFlag = false  // 标记 SSE 是否已发送完成事件
 
   // 进度区
   const progressDiv = document.createElement('div')
@@ -1033,16 +1035,8 @@ async function triggerAutoInterview() {
               : `正在并行访谈... (${completedPersonas}/${total} 已完成)`
             if (progBar) progBar.style.width = `${total > 0 ? (completedPersonas / total * 100).toFixed(0) : 0}%`
           } else if (event.type === 'step' && event.step === 'auto_interview' && event.status === 'done') {
-            // 先设 footer，再改 status，确保 Vue 以完整内容渲染
-            updateStepCardFooter(`
-              <div class="confirm-block">
-                <div class="confirm-question">自动访谈完成 ✓ 共对 ${completedPersonas} 位用户进行了深度访谈</div>
-                <div class="confirm-options">
-                  <button class="confirm-btn primary" onclick="window.triggerReport && window.triggerReport()">📊 生成研究报告</button>
-                </div>
-              </div>
-            `)
-            updateStepCardStatus('done')
+            // 记录完成状态，暂不更新 DOM（等 SSE 结束后统一处理）
+            interviewDoneFlag = true
           }
         } catch {
           buffer = eventStr
@@ -1050,12 +1044,17 @@ async function triggerAutoInterview() {
       }
     }
 
+    // 只有当 SSE 发送了完成事件时才更新状态
+    if (interviewDoneFlag) {
+      updateStepCardStatus('done')
+    }
     researchStore.updateStepProgress('interview', 'done')
     researchStore.updateStepProgress('report', 'active')
     uiStore.showToolbarButton('report')
-    // 等 DOM 更新完成后再追加引导消息并滚动
+    // 等待 DOM 稳定后再追加引导消息
     await nextTick()
-    scrollToBottom()
+    await nextTick()
+    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
     appendConfirmMsg(
       '自动深度访谈完成 ✓ 已对所有用户人设完成系统化访谈。建议生成研究报告以获得完整洞察。',
       [
@@ -1086,6 +1085,7 @@ async function triggerReport() {
   }))
 
   let fullReport = ''
+  let reportDoneFlag = false  // 标记 SSE 是否已发送完成事件
 
   try {
     const res = await fetch(`${API_BASE}/research-flow/generate-report`, {
@@ -1126,7 +1126,8 @@ async function triggerReport() {
             updateStepCardContent(fullReport)
             scrollToBottom()
           } else if (event.type === 'step' && event.status === 'done') {
-            updateStepCardStatus('done')
+            // 记录完成状态，暂不更新 DOM
+            reportDoneFlag = true
             researchStore.setReportContent(fullReport)
           }
         } catch {
@@ -1135,15 +1136,24 @@ async function triggerReport() {
       }
     }
 
+    // 只有当 SSE 发送了完成事件时才更新状态
+    if (reportDoneFlag) {
+      updateStepCardStatus('done')
+    }
     researchStore.updateStepProgress('report', 'done')
-    updateStepCardFooter(`
-      <div class="confirm-block">
-        <div class="confirm-question">✅ 研究报告已生成完毕</div>
-        <div class="confirm-options">
-          <button class="confirm-btn primary" onclick="window.exportReport && window.exportReport()">📥 导出 Markdown</button>
-        </div>
-      </div>
-    `)
+    // 等待 DOM 稳定后再追加引导消息
+    await nextTick()
+    await nextTick()
+    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
+    appendConfirmMsg(
+      '✅ 研究报告已生成完毕',
+      [
+        { label: '📥 导出 Markdown', action: 'window.exportReport && window.exportReport()' },
+        { label: '🎤 继续访谈', action: 'window.triggerInterview && window.triggerInterview()' }
+      ]
+    )
+    await nextTick()
+    scrollToBottom()
   } catch (e) {
     console.error('triggerReport error:', e)
     updateStepCardStatus('error')
