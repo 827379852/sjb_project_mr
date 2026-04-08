@@ -2,11 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
-      "Bash(npx vue-tsc:*)",
-      "Bash(npm run:*)",
-      "Bash(curl:*)",
-      "Bash(npx vite:*)",
-      "Bash(taskkill:*)"
+      "Bash(npm run:*)"
     ]
   }
 }

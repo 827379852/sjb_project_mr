@@ -1,9 +1,11 @@
+from app.models.user import User
 from app.models.research_project import ResearchProject, ProjectStatus
 from app.models.questionnaire import Questionnaire
 from app.models.respondent import RespondentConfig, Respondent
 from app.models.research_run import ResearchRun, SurveyResponse, RunStatus
 
 __all__ = [
+    "User",
     "ResearchProject", "ProjectStatus",
     "Questionnaire",
     "RespondentConfig", "Respondent",

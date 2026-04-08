@@ -39,6 +39,6 @@ async def get_db() -> AsyncSession:
 async def init_db() -> None:
     """初始化数据库表结构"""
     # 需要先导入所有模型，确保 metadata 已注册
-    from app.models import research_project, questionnaire, respondent, research_run  # noqa
+    from app.models import user, research_project, questionnaire, respondent, research_run  # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

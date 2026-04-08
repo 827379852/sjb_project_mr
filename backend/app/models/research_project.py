@@ -4,8 +4,8 @@
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import String, Text, DateTime, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, Text, DateTime, ForeignKey, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
@@ -40,5 +40,11 @@ class ResearchProject(Base):
     # 最后一次运行 ID
     last_run_id: Mapped[str] = mapped_column(String(36), nullable=True)
 
+    # 所属用户
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # 关系
+    user: Mapped["User"] = relationship("User", backref="projects")

@@ -24,6 +24,8 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.response import ApiResponse
+from app.models.user import User
+from app.dependencies.auth import get_current_active_user
 
 router = APIRouter(prefix="/research-flow", tags=["研究闭环"])
 
