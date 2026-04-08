@@ -705,7 +705,7 @@
   font-size: 14px;
   line-height: 1.7;
   color: var(--text-primary);
-  white-space: pre-wrap;
+  /* white-space: pre-wrap; */
   word-break: break-word;
 }
 
