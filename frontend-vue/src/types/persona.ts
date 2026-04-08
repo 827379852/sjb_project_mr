@@ -42,6 +42,7 @@ export type Phase =
   | 'scouting'
   | 'interviewing'
   | 'reporting'
+  | 'done'
 
 export type StepStatus = 'pending' | 'active' | 'done'
 

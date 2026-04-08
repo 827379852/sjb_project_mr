@@ -106,7 +106,7 @@ function restoreMessagesFromStore() {
   // 恢复设计内容
   if (researchStore.designContent) {
     const designId = 'design-restored'
-    // 根据阶段决定是否显示下一步按钮
+    // 只有 post-design 阶段显示下一步按钮（用户可以在此调整）
     const showDesignFooter = researchStore.phase === 'post-design'
     messages.value.push({
       id: `design-content`,
@@ -132,10 +132,9 @@ function restoreMessagesFromStore() {
     uiStore.expandStep(designId)
   }
 
-  // 恢复人设卡片（如果有）
+  // 恢复人设卡片（如果有）- 不显示后续引导按钮
   if (researchStore.personas.length > 0) {
     const personasId = 'personas-restored'
-    const showPersonasFooter = researchStore.phase === 'personas' || researchStore.phase === 'scouting'
     messages.value.push({
       id: personasId,
       type: 'stepCard',
@@ -146,23 +145,14 @@ function restoreMessagesFromStore() {
         desc: `已生成 ${researchStore.personas.length} 个用户画像`,
         status: 'done',
         content: buildPersonasGridHtml(),
-        footer: showPersonasFooter ? `
-          <div class="confirm-block">
-            <div class="confirm-question">人设已生成 ✓ 接下来？</div>
-            <div class="confirm-options">
-              <button class="confirm-btn primary" onclick="window.triggerScout && window.triggerScout()">🔍 社媒侦察增强</button>
-              <button class="confirm-btn" onclick="window.triggerInterview && window.triggerInterview()">💬 开始访谈</button>
-            </div>
-          </div>
-        ` : ''
+        footer: '' // 不显示后续引导
       }
     })
     uiStore.expandStep(personasId)
   }
 
-  // 恢复访谈记录
+  // 恢复访谈记录 - 不显示后续引导按钮
   const history = researchStore.interviewHistory
-  const hasInterviews = Object.keys(history).length > 0
   Object.entries(history).forEach(([personaId, msgs]) => {
     const persona = researchStore.personas.find(p => p.id === personaId)
     const personaName = persona?.name || '受访者'
@@ -193,7 +183,7 @@ function restoreMessagesFromStore() {
     uiStore.expandStep(personaId)
   })
 
-  // 恢复报告
+  // 恢复报告 - 显示导出按钮
   if (researchStore.reportContent) {
     const reportId = 'report-restored'
     messages.value.push({
@@ -206,25 +196,17 @@ function restoreMessagesFromStore() {
         desc: '已完成',
         status: 'done',
         content: researchStore.reportContent,
-        footer: ''
+        footer: `
+          <div class="confirm-block">
+            <div class="confirm-question">✅ 研究报告已生成完毕</div>
+            <div class="confirm-options">
+              <button class="confirm-btn primary" onclick="window.exportReport && window.exportReport()">📥 导出 Markdown</button>
+            </div>
+          </div>
+        `
       }
     })
     uiStore.expandStep(reportId)
-  }
-
-  // 如果没有报告但有访谈，显示生成报告按钮
-  if (hasInterviews && !researchStore.reportContent && researchStore.phase === 'interviewing') {
-    const lastMsg = messages.value[messages.value.length - 1]
-    if (lastMsg?.stepData) {
-      lastMsg.stepData.footer = `
-        <div class="confirm-block">
-          <div class="confirm-question">访谈完成 ✓ 生成研究报告？</div>
-          <div class="confirm-options">
-            <button class="confirm-btn primary" onclick="window.triggerReport && window.triggerReport()">📊 生成报告</button>
-          </div>
-        </div>
-      `
-    }
   }
 
   console.log('restored messages:', messages.value.length)
@@ -297,26 +279,6 @@ function updateStepCardFooter(footer: string) {
   if (lastStepCard?.stepData) {
     lastStepCard.stepData.footer = footer
   }
-}
-
-function appendConfirmMsg(question: string, options: { label: string; action: string }[]) {
-  messages.value.push({
-    id: `confirm-${Date.now()}`,
-    type: 'agent',
-    content: '',
-    html: `
-      <div class="confirm-block fade-in">
-        <div class="confirm-question">${escapeHtml(question)}</div>
-        <div class="confirm-options">
-          ${options.map((opt, i) => `
-            <button class="confirm-btn ${i === 0 ? 'primary' : ''}" onclick="${opt.action}">${escapeHtml(opt.label)}</button>
-          `).join('')}
-        </div>
-      </div>
-    `
-  })
-  // 等待 Vue 响应式更新完成后再滚动，避免 DOM 操作冲突
-  nextTick(() => scrollToBottom())
 }
 
 
@@ -589,17 +551,15 @@ async function triggerPersonas() {
 
     researchStore.updateStepProgress('personas', 'done')
     researchStore.updateStepProgress('scout', 'active')
-    uiStore.showToolbarButton('scout')
-    uiStore.showToolbarButton('interview')
 
-    updateStepCardFooter(`
-      <div class="confirm-block">
-        <div class="confirm-question">已生成 ${researchStore.personas.length} 个用户画像</div>
-        <div class="confirm-options">
-          <button class="confirm-btn primary" onclick="window.triggerScout && window.triggerScout()">🌐 开始社媒侦察</button>
-        </div>
-      </div>
-    `)
+    // 自动进入下一阶段：社媒侦察
+    updateStepCardFooter('')
+    await nextTick()
+    scrollToBottom()
+    researchStore.setStreaming(false)
+    // 自动触发社媒侦察
+    await triggerScout()
+    return
   } catch (e) {
     console.error('triggerPersonas error:', e)
     updateStepCardStatus('error')
@@ -809,19 +769,14 @@ async function triggerScout() {
     }
     researchStore.updateStepProgress('scout', 'done')
     researchStore.updateStepProgress('interview', 'active')
-    // 等待 DOM 稳定后再追加引导消息
-    await nextTick()
-    await nextTick()
-    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
-    appendConfirmMsg(
-      '社媒侦察完成 ✓ 每个人设已根据真实用户声音增强。建议进行深度访谈来挖掘更深层的动机。',
-      [
-        { label: '🎤 自动深度访谈', action: 'window.triggerAutoInterview && window.triggerAutoInterview()' },
-        { label: '📊 直接生成报告', action: 'window.triggerReport && window.triggerReport()' }
-      ]
-    )
+
+    // 自动进入下一阶段：自动深度访谈
     await nextTick()
     scrollToBottom()
+    researchStore.setStreaming(false)
+    // 自动触发访谈
+    await triggerAutoInterview()
+    return
   } catch (e) {
     console.error('triggerScout error:', e)
     updateStepCardStatus('error')
@@ -1050,19 +1005,14 @@ async function triggerAutoInterview() {
     }
     researchStore.updateStepProgress('interview', 'done')
     researchStore.updateStepProgress('report', 'active')
-    uiStore.showToolbarButton('report')
-    // 等待 DOM 稳定后再追加引导消息
-    await nextTick()
-    await nextTick()
-    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
-    appendConfirmMsg(
-      '自动深度访谈完成 ✓ 已对所有用户人设完成系统化访谈。建议生成研究报告以获得完整洞察。',
-      [
-        { label: '📊 生成研究报告', action: 'window.triggerReport && window.triggerReport()' }
-      ]
-    )
+
+    // 自动进入下一阶段：生成研究报告
     await nextTick()
     scrollToBottom()
+    researchStore.setStreaming(false)
+    // 自动触发报告生成
+    await triggerReport()
+    return
   } catch (e) {
     console.error('triggerAutoInterview error:', e)
     updateStepCardStatus('error')
@@ -1141,17 +1091,17 @@ async function triggerReport() {
       updateStepCardStatus('done')
     }
     researchStore.updateStepProgress('report', 'done')
-    // 等待 DOM 稳定后再追加引导消息
-    await nextTick()
-    await nextTick()
-    // 追加独立的引导消息（避免 stepCard 嵌套更新冲突）
-    appendConfirmMsg(
-      '✅ 研究报告已生成完毕',
-      [
-        { label: '📥 导出 Markdown', action: 'window.exportReport && window.exportReport()' },
-        { label: '🎤 继续访谈', action: 'window.triggerInterview && window.triggerInterview()' }
-      ]
-    )
+    researchStore.setPhase('done')
+
+    // 研究完成，显示导出按钮
+    updateStepCardFooter(`
+      <div class="confirm-block">
+        <div class="confirm-question">✅ 研究报告已生成完毕</div>
+        <div class="confirm-options">
+          <button class="confirm-btn primary" onclick="window.exportReport && window.exportReport()">📥 导出 Markdown</button>
+        </div>
+      </div>
+    `)
     await nextTick()
     scrollToBottom()
   } catch (e) {
