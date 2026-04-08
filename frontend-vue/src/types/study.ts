@@ -1,4 +1,4 @@
-import type { Persona, Phase, StepProgress, InterviewMessage, Attachment } from './persona'
+import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, ScoutResultRaw } from './persona'
 
 export interface ResearchState {
   studyId: string | null
@@ -40,15 +40,6 @@ export interface InterviewRecord {
   messages: { role: string; content: string }[]
 }
 
-// 侦察结果
-export interface ScoutResultRecord {
-  id: string
-  keywords: string[]
-  platforms: string[]
-  posts: any[]
-  insights: string[]
-}
-
 // 报告记录
 export interface ReportRecord {
   id: string
@@ -69,6 +60,6 @@ export interface StudyDetail {
   updated_at: string
   personas: Persona[]
   interviews: InterviewRecord[]
-  scout_results: ScoutResultRecord[]
+  scout_results: ScoutResultRaw[]
   reports: ReportRecord[]
 }

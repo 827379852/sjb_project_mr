@@ -122,7 +122,7 @@ function restoreMessagesFromStore() {
           <div class="confirm-block">
             <div class="confirm-question">框架已生成 ✓ 接下来要怎么做？</div>
             <div class="confirm-options">
-              <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 生成目标人设</button>
+              <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
               <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 调整研究方向</button>
             </div>
           </div>
@@ -149,6 +149,57 @@ function restoreMessagesFromStore() {
       }
     })
     uiStore.expandStep(personasId)
+  }
+
+  // 恢复社媒侦察结果（如果有）
+  if (researchStore.scoutResults.length > 0) {
+    const scoutId = 'scout-restored'
+    let scoutContent = '<div class="post-feed">'
+
+    researchStore.scoutResults.forEach(result => {
+      scoutContent += `
+        <div style="font-size:11px;color:var(--text-dim);margin:8px 0 4px;padding:4px 8px;background:var(--surface3);border-radius:4px">
+          👤 ${escapeHtml(result.personaName)} 的社媒声音
+        </div>
+      `
+      result.posts.forEach(post => {
+        const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
+        scoutContent += `
+          <div class="post-item">
+            <div class="post-header">
+              <span class="post-platform ${post.platform}">${post.platform}</span>
+              <span class="post-sentiment">${sentimentEmoji}</span>
+            </div>
+            <div class="post-content">${escapeHtml(post.content || '')}</div>
+          </div>
+        `
+      })
+      if (result.insights.length > 0) {
+        result.insights.forEach(insight => {
+          scoutContent += `
+            <div class="insight-item" style="margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)">
+              <span style="font-size:12px;color:var(--text-dim)">💡 洞察</span> <span style="font-size:12px">${escapeHtml(insight)}</span>
+            </div>
+          `
+        })
+      }
+    })
+    scoutContent += '</div>'
+
+    messages.value.push({
+      id: scoutId,
+      type: 'stepCard',
+      content: '',
+      stepData: {
+        id: scoutId,
+        title: '🌐 社交媒体侦察',
+        desc: `已搜索 ${researchStore.scoutResults.length} 个人设的社媒内容`,
+        status: 'done',
+        content: scoutContent,
+        footer: ''
+      }
+    })
+    uiStore.expandStep(scoutId)
   }
 
   // 恢复访谈记录 - 不显示后续引导按钮
@@ -412,7 +463,7 @@ async function runDesignStudy(userRequest: string) {
       <div class="confirm-block">
         <div class="confirm-question">框架已生成 ✓ 接下来要怎么做？</div>
         <div class="confirm-options">
-          <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 生成目标人设</button>
+          <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
           <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 调整研究方向</button>
         </div>
       </div>
@@ -496,7 +547,7 @@ function buildPersonasGridHtml(): string {
 async function triggerPersonas() {
   if (!researchStore.studyId || researchStore.isStreaming) return
 
-  addStepCard(`step-personas-${Date.now()}`, '👥 生成目标人设', '正在构建初始用户画像...', 'running')
+  addStepCard(`step-personas-${Date.now()}`, '👥 开始市场调研', '正在构建初始用户画像...', 'running')
   researchStore.setStreaming(true)
   researchStore.setPhase('personas')
   researchStore.updateStepProgress('personas', 'active')
@@ -767,6 +818,19 @@ async function triggerScout() {
     if (scoutDoneFlag) {
       updateStepCardStatus('done')
     }
+
+    // 存储社媒侦察结果到 store
+    Object.entries(personaScoutData).forEach(([personaId, data]) => {
+      if (data.posts.length > 0 || data.insights.length > 0) {
+        researchStore.addScoutResult({
+          personaId,
+          personaName: data.name,
+          posts: data.posts,
+          insights: data.insights
+        })
+      }
+    })
+
     researchStore.updateStepProgress('scout', 'done')
     researchStore.updateStepProgress('interview', 'active')
 

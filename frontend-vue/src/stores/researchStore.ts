@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus } from '@/types'
+import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus, ScoutResult } from '@/types'
 
 export const useResearchStore = defineStore('research', () => {
   // State
@@ -12,6 +12,7 @@ export const useResearchStore = defineStore('research', () => {
   const personas = ref<Persona[]>([])
   const selectedPersona = ref<Persona | null>(null)
   const interviewHistory = ref<Record<string, InterviewMessage[]>>({})
+  const scoutResults = ref<ScoutResult[]>([])
   const attachments = ref<Attachment[]>([])
   const isStreaming = ref(false)
   const reportContent = ref('')
@@ -98,6 +99,14 @@ export const useResearchStore = defineStore('research', () => {
     interviewHistory.value = history
   }
 
+  function addScoutResult(result: ScoutResult) {
+    scoutResults.value.push(result)
+  }
+
+  function setScoutResults(results: ScoutResult[]) {
+    scoutResults.value = results
+  }
+
   function updateStepProgress(step: keyof StepProgress, status: StepStatus) {
     stepProgress.value[step] = status
   }
@@ -111,6 +120,7 @@ export const useResearchStore = defineStore('research', () => {
     personas.value = []
     selectedPersona.value = null
     interviewHistory.value = {}
+    scoutResults.value = []
     attachments.value = []
     isStreaming.value = false
     reportContent.value = ''
@@ -133,6 +143,7 @@ export const useResearchStore = defineStore('research', () => {
     personas,
     selectedPersona,
     interviewHistory,
+    scoutResults,
     attachments,
     isStreaming,
     reportContent,
@@ -148,10 +159,12 @@ export const useResearchStore = defineStore('research', () => {
     setDesignContent,
     setPersonas,
     setInterviewHistory,
+    setScoutResults,
     addPersona,
     updatePersona,
     setSelectedPersona,
     addInterviewMessage,
+    addScoutResult,
     addAttachment,
     removeAttachment,
     clearAttachments,

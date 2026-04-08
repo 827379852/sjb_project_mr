@@ -24,6 +24,23 @@ export interface Post {
   sentiment: 'positive' | 'negative' | 'neutral'
 }
 
+// 社媒侦察结果（按人设分组）
+export interface ScoutResult {
+  personaId: string
+  personaName: string
+  posts: Post[]
+  insights: string[]
+}
+
+// 社媒侦察原始数据（从后端加载的格式）
+export interface ScoutResultRaw {
+  id: string
+  keywords: string[]
+  platforms: string[]
+  posts: Post[]
+  insights: string[]
+}
+
 export interface InterviewMessage {
   role: 'user' | 'assistant'
   content: string

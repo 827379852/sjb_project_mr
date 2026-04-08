@@ -1130,17 +1130,66 @@ async def generate_report(
     scout_data = scout_result.scalars().first()
     scout_insights = scout_data.insights if scout_data else []
 
-    system_prompt = """你是一位资深定性研究员，擅长将访谈数据转化为可指导决策的洞察报告。
-报告要：
-- 有清晰的结构（执行摘要 → 用户画像 → 核心发现 → 机会洞察 → 建议）
-- 用具体的访谈引用支撑观点（要有引号和说话人）
-- 区分"验证的假设"和"被推翻的假设"
-- 提出 3-5 个具体可行的产品/策略建议
-- 用 Markdown 格式"""
+    system_prompt = """你是一位资深市场研究专家，擅长将定性研究数据转化为可指导商业决策的专业报告。
 
+你的报告必须遵循以下结构，每个章节都要有实质性内容：
+
+## 一、执行摘要（200字左右）
+- 研究背景与目的（一句话概括）
+- 3-5 条关键发现（每条带数据或用户原话支撑）
+- 核心行动建议摘要
+
+## 二、研究方法（150字左右）
+- 研究方法说明：AI 模拟用户深度访谈 + 社交媒体舆情分析
+- 样本概况：必须明确说明用户画像数量、覆盖的人群特征
+- 研究局限性：诚实说明本研究的局限
+
+## 三、用户画像分析（500字左右）
+- 人群整体特征概述
+- 逐一介绍每位用户画像（人口统计、行为特征、心理特征、核心痛点）
+- 用户决策路径/购买旅程分析
+- 痛点优先级排序（按严重程度）
+
+## 四、核心发现（600字左右）
+每个发现包含：
+- 发现主题
+- 具体描述
+- 用户原话引用（带说话人名字）
+- 假设验证情况（"验证"或"推翻"）
+
+## 五、竞品与市场洞察（300字左右）
+- 用户对现有产品/服务的评价
+- 市场趋势判断
+- 竞品优劣势对比
+
+## 六、机会与建议（500字左右）
+### 短期建议（1-3个月可执行）
+- 具体行动项 + 预期效果 + 优先级
+
+### 中长期建议（3-12个月）
+- 具体行动项 + 预期效果 + 优先级
+
+### 风险提示
+- 执行风险、市场变化风险
+
+## 七、附录
+- 研究数据统计（访谈人数、问题数量等）
+- 假设验证矩阵表（表格形式）
+
+写作要求：
+- 报告中必须包含所有用户画像的信息，不能遗漏任何一位受访者
+- 用具体的访谈引用支撑观点（必须有引号和说话人名字）
+- 区分"验证的假设"和"被推翻的假设"
+- 建议要具体可行，有优先级
+- 使用 Markdown 格式，适当使用表格
+- 总字数 2500-3500 字"""
+
+    # 构建完整的访谈记录（不截断）
     interview_summary = ""
-    for interview in interviews[:5]:
-        name = interview.get("persona_name", "")
+    total_questions = 0
+    for idx, interview in enumerate(interviews):
+        name = interview.get("persona_name", f"受访者{idx+1}")
+        persona_id = interview.get("persona_id", "")
         msgs = interview.get("messages", [])
         if msgs:
             qa_pairs = []
@@ -1148,28 +1197,54 @@ async def generate_report(
                 q = msgs[i].get("content", "") if i < len(msgs) else ""
                 a = msgs[i+1].get("content", "") if i+1 < len(msgs) else ""
                 if q and a:
-                    qa_pairs.append(f"Q: {q[:80]}\nA（{name}）: {a[:150]}")
-            interview_summary += f"\n### {name} 的访谈\n" + "\n\n".join(qa_pairs[:3]) + "\n"
+                    qa_pairs.append(f"**问：** {q}\n**{name} 答：** {a}")
+                    total_questions += 1
+            interview_summary += f"\n### {name} 的访谈（共 {len(qa_pairs)} 轮问答）\n" + "\n\n".join(qa_pairs) + "\n"
 
-    user_prompt = f"""请基于以下研究数据，生成一份专业的定性用户研究报告。
+    # 构建完整的用户画像数据（不截断）
+    persona_details = []
+    for p in personas:
+        persona_info = {
+            "姓名": p.get("name", "未知"),
+            "年龄": p.get("age", "未知"),
+            "职业": p.get("occupation", "未知"),
+            "城市": p.get("city", "未知"),
+            "背景": p.get("background", ""),
+            "性格特征": p.get("personality", ""),
+            "消费习惯": p.get("consumer_habits", ""),
+            "核心痛点": p.get("pain_points", ""),
+            "动机": p.get("motivations", ""),
+            "数字行为": p.get("digital_behavior", ""),
+            "核心价值观": p.get("core_values", []),
+            "态度": p.get("attitude", ""),
+        }
+        persona_details.append(persona_info)
+
+    user_prompt = f"""请基于以下完整的研究数据，生成一份专业的市场调研报告。
 
 ## 研究背景
-{study.user_request or ''}
+{study.user_request or '未提供研究背景'}
 
-## 研究设计
-{(study.design_content or '')[:300]}
+## 研究设计框架
+{study.design_content or '未提供研究设计'}
 
-## 用户画像摘要（{len(personas)} 人）
-{json.dumps([{k: v for k, v in p.items() if k in ['name', 'age', 'occupation', 'attitude', 'pain_points']} for p in personas[:5]], ensure_ascii=False, indent=2)}
+## 用户画像详情（共 {len(personas)} 人）
+{json.dumps(persona_details, ensure_ascii=False, indent=2)}
 
-## 社交媒体洞察
-{json.dumps(scout_insights, ensure_ascii=False) if scout_insights else '无'}
+## 社交媒体舆情洞察（共 {len(scout_insights)} 条）
+{json.dumps(scout_insights, ensure_ascii=False, indent=2) if scout_insights else '本次研究暂未收集社媒数据'}
 
-## 访谈记录摘要
+## 深度访谈记录（共 {len(interviews)} 位受访者，{total_questions} 轮问答）
 {interview_summary if interview_summary else '暂无访谈数据'}
 
 ---
-请生成完整的研究报告（Markdown 格式，约 800-1200 字）。"""
+请严格按照上述七个章节结构，生成完整的市场调研报告（Markdown 格式）。
+
+重要提示：
+1. 报告中必须逐一介绍所有 {len(personas)} 位用户画像，不能遗漏
+2. 访谈发现要涵盖所有 {len(interviews)} 位受访者的观点
+3. 每个发现都要有用户原话引用支撑
+4. 建议要具体可行，有优先级"""
 
     async def stream_generator():
         full_report = ""
