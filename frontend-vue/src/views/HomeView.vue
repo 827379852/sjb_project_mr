@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import TheSidebar from '@/components/layout/TheSidebar.vue'
 import TheTopbar from '@/components/layout/TheTopbar.vue'
@@ -230,13 +230,20 @@ function restoreMessagesFromStore() {
   console.log('restored messages:', messages.value.length)
 }
 
+// 标记是否正在创建新任务（用于防止 watch 清空正在显示的消息）
+const isCreatingNewStudy = ref(false)
+
 // 监听 studyId 变化，恢复历史消息
 // 注意：只在加载历史记录时恢复，创建新任务时不恢复（因为消息已经在实时显示）
 watch(() => researchStore.studyId, (newId, oldId) => {
-  // 如果正在流式传输，说明是新创建任务，不需要恢复
-  if (researchStore.isStreaming) return
-  // 只要有新的 studyId 就恢复（包括页面刷新后的首次加载，oldId 此时为 null）
-  if (newId && newId !== oldId) {
+  // 如果正在创建新任务，跳过恢复
+  if (isCreatingNewStudy.value) {
+    isCreatingNewStudy.value = false
+    return
+  }
+  // 加载历史记录时恢复（oldId 存在说明是从一个研究切换到另一个）
+  // 或者 oldId 为 null 但 isStreaming 为 false（页面刷新后首次加载）
+  if (newId && newId !== oldId && !researchStore.isStreaming) {
     restoreMessagesFromStore()
   }
 })
@@ -290,6 +297,26 @@ function updateStepCardFooter(footer: string) {
   if (lastStepCard?.stepData) {
     lastStepCard.stepData.footer = footer
   }
+}
+
+function appendConfirmMsg(question: string, options: { label: string; action: string }[]) {
+  messages.value.push({
+    id: `confirm-${Date.now()}`,
+    type: 'agent',
+    content: '',
+    html: `
+      <div class="confirm-block fade-in">
+        <div class="confirm-question">${escapeHtml(question)}</div>
+        <div class="confirm-options">
+          ${options.map((opt, i) => `
+            <button class="confirm-btn ${i === 0 ? 'primary' : ''}" onclick="${opt.action}">${escapeHtml(opt.label)}</button>
+          `).join('')}
+        </div>
+      </div>
+    `
+  })
+  // 等待 Vue 响应式更新完成后再滚动，避免 DOM 操作冲突
+  nextTick(() => scrollToBottom())
 }
 
 
@@ -437,15 +464,54 @@ async function runDesignStudy(userRequest: string) {
   researchStore.setStreaming(false)
 }
 
+function buildPersonaDetailHtml(p: Persona): string {
+  let html = ''
+  if (p.background) html += `<div class="persona-detail-section"><div class="persona-detail-label">📋 背景</div><div class="persona-detail-value">${escapeHtml(p.background)}</div></div>`
+  if (p.personality) html += `<div class="persona-detail-section"><div class="persona-detail-label">🧠 性格特征</div><div class="persona-detail-value">${escapeHtml(p.personality)}</div></div>`
+  if (p.consumer_habits) html += `<div class="persona-detail-section"><div class="persona-detail-label">🛒 消费习惯</div><div class="persona-detail-value">${escapeHtml(p.consumer_habits)}</div></div>`
+  if (p.pain_points) html += `<div class="persona-detail-section"><div class="persona-detail-label">😤 痛点</div><div class="persona-detail-value">${Array.isArray(p.pain_points) ? p.pain_points.map(v => escapeHtml(v)).join('、') : escapeHtml(p.pain_points)}</div></div>`
+  if (p.motivations) html += `<div class="persona-detail-section"><div class="persona-detail-label">🎯 动机</div><div class="persona-detail-value">${escapeHtml(p.motivations)}</div></div>`
+  if (p.digital_behavior) html += `<div class="persona-detail-section"><div class="persona-detail-label">📱 数字行为</div><div class="persona-detail-value">${escapeHtml(p.digital_behavior)}</div></div>`
+  if (p.social_media) html += `<div class="persona-detail-section"><div class="persona-detail-label">💬 社媒偏好</div><div class="persona-detail-value">${escapeHtml(p.social_media)}</div></div>`
+  if (p.core_values && p.core_values.length > 0) html += `<div class="persona-detail-section"><div class="persona-detail-label">💎 核心价值观</div><div class="persona-detail-value">${p.core_values.map(v => escapeHtml(v)).join('、')}</div></div>`
+  if (p.attitude) html += `<div class="persona-detail-section"><div class="persona-detail-label">💭 态度</div><div class="persona-detail-value">${typeof p.attitude === 'object' ? escapeHtml(JSON.stringify(p.attitude)) : escapeHtml(p.attitude)}</div></div>`
+  if (p.attitude_hypotheses) html += `<div class="persona-detail-section"><div class="persona-detail-label">🧪 态度假设</div><div class="persona-detail-value">${escapeHtml(JSON.stringify(p.attitude_hypotheses))}</div></div>`
+  if (p.description) html += `<div class="persona-detail-section"><div class="persona-detail-label">📝 完整描述</div><div class="persona-detail-value">${escapeHtml(p.description)}</div></div>`
+  if (p.scouted_updates) html += `<div class="persona-detail-section" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)"><div class="persona-detail-label" style="color:var(--green)">🔄 社媒侦察更新</div><div class="persona-detail-value" style="color:var(--green)">${typeof p.scouted_updates === 'object' ? escapeHtml(JSON.stringify(p.scouted_updates, null, 2)) : escapeHtml(p.scouted_updates)}</div></div>`
+  return html
+}
+
+function updatePersonaCardDetail(p: Persona) {
+  const card = document.querySelector(`.persona-card[data-persona-id="${p.id}"]`)
+  if (!card) return
+  const detailPanel = card.querySelector('.persona-detail-panel')
+  if (detailPanel) {
+    detailPanel.innerHTML = buildPersonaDetailHtml(p)
+  }
+  const metaEl = card.querySelector('.persona-card-meta') as HTMLElement
+  if (metaEl && (p.age || p.occupation)) {
+    metaEl.textContent = `${p.age || ''}岁 · ${escapeHtml(p.occupation || '')}`
+  }
+  const tagsDiv = card.querySelector('.persona-card-meta + div')
+  if (tagsDiv && p.core_values) {
+    tagsDiv.innerHTML = p.core_values.slice(0, 3).map((v: string) => `<span class="persona-card-tag">${escapeHtml(v)}</span>`).join('')
+  }
+  if (!card.querySelector('.persona-enriched-badge')) {
+    const badge = document.createElement('div')
+    badge.className = 'persona-enriched-badge'
+    badge.textContent = '✨ 已由社媒数据增强'
+    card.appendChild(badge)
+    ;(card as HTMLElement).style.borderColor = 'var(--green)'
+    setTimeout(() => { ;(card as HTMLElement).style.borderColor = '' }, 1500)
+  }
+}
+
 function buildPersonasGridHtml(): string {
   const emojis = ['👩', '👨', '🧑', '👩‍💼', '👨‍💻']
   let html = '<div class="personas-grid">'
   researchStore.personas.forEach((persona, index) => {
-    const painPoints = Array.isArray(persona.pain_points)
-      ? persona.pain_points.join('、')
-      : (persona.pain_points || '')
     html += `
-      <div class="persona-card" onclick="this.classList.toggle('expanded')">
+      <div class="persona-card" data-persona-id="${persona.id}" onclick="this.classList.toggle('expanded')">
         <div class="persona-expand-icon">▼</div>
         <div class="persona-card-header">
           <div class="persona-card-avatar">${emojis[index % 5]}</div>
@@ -457,20 +523,7 @@ function buildPersonasGridHtml(): string {
         <div class="persona-card-tags">
           ${(persona.core_values || []).slice(0, 3).map((v: string) => `<span class="persona-card-tag">${v}</span>`).join('')}
         </div>
-        <div class="persona-detail-panel">
-          <div class="persona-detail-section">
-            <div class="persona-detail-label">📋 背景</div>
-            <div class="persona-detail-value">${persona.background || ''}</div>
-          </div>
-          <div class="persona-detail-section">
-            <div class="persona-detail-label">😤 痛点</div>
-            <div class="persona-detail-value">${painPoints}</div>
-          </div>
-          <div class="persona-detail-section">
-            <div class="persona-detail-label">🎯 态度</div>
-            <div class="persona-detail-value">${persona.attitude || ''}</div>
-          </div>
-        </div>
+        <div class="persona-detail-panel">${buildPersonaDetailHtml(persona)}</div>
       </div>
     `
   })
@@ -568,12 +621,6 @@ async function triggerScout() {
   researchStore.setPhase('scouting')
   researchStore.updateStepProgress('scout', 'active')
 
-  // 获取 stepCard 的 body 元素
-  const stepBody = document.getElementById(`${cardId}-body`)
-  if (stepBody) {
-    stepBody.style.display = 'block'
-  }
-
   // 从研究标题提取关键词
   const title = researchStore.studyTitle.replace('...', '')
   const keywords = title.split(/[，,、\s]+/).filter(k => k.length > 1).slice(0, 3)
@@ -633,13 +680,20 @@ async function triggerScout() {
     })
   }
 
-  // 构建 body 内容
+  // 等待 Vue 渲染完成后，再操作 DOM
+  await nextTick()
+  console.log('[Scout] cardId:', cardId, 'keywords:', keywords)
   const bodyEl = document.getElementById(`${cardId}-body`)
-  if (bodyEl) {
-    bodyEl.innerHTML = ''
-    bodyEl.appendChild(progressDiv)
-    bodyEl.appendChild(postsContainer)
+  console.log('[Scout] stepCard body element:', bodyEl)
+  if (!bodyEl) {
+    console.error('[Scout] ERROR: stepCard body not found, aborting')
+    researchStore.setStreaming(false)
+    return
   }
+  bodyEl.innerHTML = ''
+  bodyEl.appendChild(progressDiv)
+  bodyEl.appendChild(postsContainer)
+  console.log('[Scout] body initialized with progress and posts container')
 
   try {
     const res = await fetch(`${API_BASE}/research-flow/scout-and-build`, {
@@ -674,6 +728,7 @@ async function triggerScout() {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
+          console.log('[Scout] SSE event type:', event.type, event)
           if (event.type === 'persona_scout_start') {
             // 新人设开始侦察
             currentPersonaId = (event as any).persona_id
@@ -688,22 +743,22 @@ async function triggerScout() {
           } else if (event.type === 'post') {
             const post = (event as any).post
             const personaId = (event as any).persona_id
+            console.log('[Scout] post event, personaId:', personaId, 'currentBlock:', currentPersonaBlock?.dataset?.personaId, 'post:', post?.content?.substring(0, 80))
             if (personaScoutData[personaId]) {
               personaScoutData[personaId].posts.push(post)
               totalPosts++
-              // 找到对应的人设区块并添加帖子
+              // 并行模式下：直接通过 personaId 查找对应区块，不依赖 currentPersonaBlock
               const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${personaId}"]`) as HTMLElement
-              if (block && currentPersonaBlock && currentPersonaBlock.dataset.personaId === personaId) {
-                addPostToBlock(currentPersonaBlock, post)
+              if (block) {
+                addPostToBlock(block, post)
               }
-              scrollToBottom()
             }
           } else if (event.type === 'persona_insights') {
             const insights = (event as any).insights || []
             const personaId = (event as any).persona_id
             if (personaScoutData[personaId]) {
               personaScoutData[personaId].insights.push(...insights)
-              // 在对应人设区块内添加洞察
+              // 直接通过 personaId 查找对应区块（并行模式下也可靠）
               const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${personaId}"]`) as HTMLElement
               if (block && insights.length > 0) {
                 const insightDiv = document.createElement('div')
@@ -711,29 +766,20 @@ async function triggerScout() {
                 insightDiv.style.cssText = 'margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)'
                 insightDiv.innerHTML = `<span style="font-size:12px;color:var(--text-dim)">💡 洞察</span> <span style="font-size:12px">${escapeHtml(insights[0])}</span>`
                 block.appendChild(insightDiv)
-                scrollToBottom()
               }
             }
           } else if (event.type === 'updated_persona') {
             const p = event.persona as Persona
+            console.log('[Scout] updated_persona:', p)
             researchStore.updatePersona(p)
-            // 更新人设卡片 UI（对标 index.html：详情更新 + 增强标记）
+            // 更新人设卡片 UI（详情面板内容 + 增强标记）
+            updatePersonaCardDetail(p)
+            // 更新社媒声音区块的人设名称
             const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${p.id}"]`)
             if (block) {
-              // 更新 header 区的人设名称（可能人设名被更新）
               const header = block.querySelector('div[style*="surface3"]')
               if (header) {
                 header.textContent = `👤 ${escapeHtml(p.name || '用户')} 的社媒声音`
-              }
-              // 添加或更新增强标记
-              if (!block.querySelector('.persona-enriched-badge')) {
-                const badge = document.createElement('div')
-                badge.className = 'persona-enriched-badge'
-                badge.textContent = '✨ 已由社媒数据增强'
-                block.appendChild(badge)
-                // 短暂绿色边框闪烁提示
-                ;(block as HTMLElement).style.borderColor = 'var(--green)'
-                setTimeout(() => { ;(block as HTMLElement).style.borderColor = '' }, 1500)
               }
             }
           } else if (event.type === 'persona_scout_done') {
@@ -745,11 +791,11 @@ async function triggerScout() {
             }
             updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成（${count} 条帖子）`)
           } else if (event.type === 'step' && event.step === 'build_persona' && event.status === 'done') {
-            updateProgress(`<span style="color:var(--green)">✓</span> 全部 ${Object.keys(personaScoutData).length} 个人设侦察完成，共 ${totalPosts} 条帖子`)
+            // 标记完成，footer 统一在 SSE 结束后设置
             updateStepCardStatus('done')
-            scrollToBottom()
           }
-        } catch {
+        } catch (e) {
+          console.warn('[Scout] SSE parse error, keeping buffer. raw:', eventStr?.substring(0, 200), e)
           buffer = eventStr
         }
       }
@@ -757,15 +803,24 @@ async function triggerScout() {
 
     researchStore.updateStepProgress('scout', 'done')
     researchStore.updateStepProgress('interview', 'active')
-    updateStepCardFooter(`
-      <div class="confirm-block">
-        <div class="confirm-question">社媒侦察完成 ✓ 已收集 ${totalPosts} 条内容，每个人设已根据真实用户声音增强</div>
-        <div class="confirm-options">
-          <button class="confirm-btn primary" onclick="window.triggerAutoInterview && window.triggerAutoInterview()">🎤 自动深度访谈</button>
-          <button class="confirm-btn" onclick="window.triggerReport && window.triggerReport()">📊 直接生成报告</button>
+    // SSE 结束后，统一设置 stepCard footer（确保响应式更新）
+    const lastCard = messages.value[messages.value.length - 1]
+    if (lastCard?.type === 'stepCard' && lastCard.stepData) {
+      lastCard.stepData.footer = `
+        <div class="confirm-block">
+          <div class="confirm-question">社媒侦察完成 ✓ 每个人设已根据真实用户声音增强</div>
+          <div class="confirm-question" style="font-size:12px;color:var(--text-dim);margin-top:6px">建议进行深度访谈来挖掘更深层的动机</div>
+          <div class="confirm-options">
+            <button class="confirm-btn primary" onclick="window.triggerAutoInterview && window.triggerAutoInterview()">🎤 自动深度访谈</button>
+            <button class="confirm-btn" onclick="window.triggerReport && window.triggerReport()">📊 直接生成报告</button>
+          </div>
         </div>
-      </div>
-    `)
+      `
+      lastCard.stepData.status = 'done'
+    }
+    // 等 DOM 更新完成后再滚动
+    await nextTick()
+    scrollToBottom()
   } catch (e) {
     console.error('triggerScout error:', e)
     updateStepCardStatus('error')
@@ -782,10 +837,6 @@ async function triggerAutoInterview() {
   researchStore.setStreaming(true)
   researchStore.setPhase('interviewing')
   researchStore.updateStepProgress('interview', 'active')
-
-  // DOM 引用
-  const cardBody = document.getElementById(`${cardId}-body`)
-  if (!cardBody) return
 
   let totalPersonas = 0
   let completedPersonas = 0
@@ -812,6 +863,16 @@ async function triggerAutoInterview() {
   interviewContainer.className = 'interview-results'
   interviewContainer.id = `${cardId}-interviews`
 
+  // 等待 Vue 渲染完成
+  await nextTick()
+  console.log('[Interview] cardId:', cardId)
+  const cardBody = document.getElementById(`${cardId}-body`)
+  console.log('[Interview] stepCard body element:', cardBody)
+  if (!cardBody) {
+    console.error('[Interview] ERROR: stepCard body not found, aborting')
+    researchStore.setStreaming(false)
+    return
+  }
   cardBody.innerHTML = ''
   cardBody.appendChild(progressDiv)
   cardBody.appendChild(questionsDiv)
@@ -903,17 +964,18 @@ async function triggerAutoInterview() {
             const idx = (event as any).index || 0
             personaInterviews[personaId] = { name, index: idx, qaList: [], done: false }
 
-            // 更新进度
-            const cur = (event as any).index || 0
+            // 更新进度条（已完成数/总数）
             const progText = document.getElementById(`${cardId}-progress-text`)
             const progBar = document.getElementById(`${cardId}-progress-bar`)
-            if (progText) progText.textContent = `正在访谈 ${name}（${cur + 1}/${totalPersonas}）...`
-            if (progBar) progBar.style.width = `${totalPersonas > 0 ? (cur / totalPersonas * 100) : 0}%`
+            if (progText) progText.textContent = `正在并行访谈... (${completedPersonas}/${totalPersonas} 已完成)`
+            if (progBar) progBar.style.width = `${totalPersonas > 0 ? (completedPersonas / totalPersonas * 100) : 0}%`
 
-            // 创建该人设的访谈块（带完整对话界面）
-            const block = buildPersonaInterviewBlock(personaId, name, idx, false, [])
-            interviewContainer.appendChild(block)
-            scrollToBottom()
+            // 并行模式下直接通过 personaId 查找/创建访谈块
+            let block = document.getElementById(`${cardId}-persona-${personaId}`) as HTMLElement
+            if (!block) {
+              block = buildPersonaInterviewBlock(personaId, name, idx, false, [])
+              interviewContainer.appendChild(block)
+            }
           } else if (event.type === 'qa') {
             const personaId = (event as any).persona_id
             const question = (event as any).question
@@ -924,7 +986,16 @@ async function triggerAutoInterview() {
             researchStore.addInterviewMessage(personaId, { role: 'user', content: question })
             researchStore.addInterviewMessage(personaId, { role: 'assistant', content: answer })
 
-            // 向该人设的对话框追加消息
+            // 并行模式下：块可能还未创建，先确保块存在
+            let block = document.getElementById(`${cardId}-persona-${personaId}`) as HTMLElement
+            if (!block) {
+              const name = personaInterviews[personaId]?.name || '用户'
+              const idx = personaInterviews[personaId]?.index || 0
+              block = buildPersonaInterviewBlock(personaId, name, idx, false, [])
+              interviewContainer.appendChild(block)
+            }
+
+            // 向该人设的对话框追加 QA
             const msgsDiv = document.getElementById(`${cardId}-msgs-${personaId}`)
             if (msgsDiv) {
               const qaDiv = document.createElement('div')
@@ -936,10 +1007,12 @@ async function triggerAutoInterview() {
               msgsDiv.appendChild(qaDiv)
               msgsDiv.scrollTop = msgsDiv.scrollHeight
             }
-            scrollToBottom()
           } else if (event.type === 'interview_done') {
             const personaId = (event as any).persona_id
-            if (personaInterviews[personaId]) personaInterviews[personaId].done = true
+            const qaCount = (event as any).qa_count || 0
+            if (personaInterviews[personaId]) {
+              personaInterviews[personaId].done = true
+            }
             completedPersonas++
 
             // 更新该人设块的元数据
@@ -947,7 +1020,6 @@ async function triggerAutoInterview() {
             if (block) {
               const meta = block.querySelector('.interview-persona-meta')
               const emotion = block.querySelector('.interview-emotion')
-              const qaCount = personaInterviews[personaId]?.qaList.length || 0
               if (meta) meta.textContent = `${qaCount} 轮问答完成 ✓`
               if (emotion) emotion.textContent = '✅ 完成'
             }
@@ -955,12 +1027,21 @@ async function triggerAutoInterview() {
             // 更新进度
             const progText = document.getElementById(`${cardId}-progress-text`)
             const progBar = document.getElementById(`${cardId}-progress-bar`)
-            if (progText) progText.textContent = completedPersonas >= totalPersonas
-              ? `全部 ${totalPersonas} 位用户访谈完成 ✓`
-              : `正在访谈... (${completedPersonas}/${totalPersonas})`
-            if (progBar) progBar.style.width = `${(completedPersonas / totalPersonas * 100).toFixed(0)}%`
-            scrollToBottom()
+            const total = totalPersonas || Object.keys(personaInterviews).length
+            if (progText) progText.textContent = completedPersonas >= total
+              ? `全部 ${total} 位用户访谈完成 ✓`
+              : `正在并行访谈... (${completedPersonas}/${total} 已完成)`
+            if (progBar) progBar.style.width = `${total > 0 ? (completedPersonas / total * 100).toFixed(0) : 0}%`
           } else if (event.type === 'step' && event.step === 'auto_interview' && event.status === 'done') {
+            // 先设 footer，再改 status，确保 Vue 以完整内容渲染
+            updateStepCardFooter(`
+              <div class="confirm-block">
+                <div class="confirm-question">自动访谈完成 ✓ 共对 ${completedPersonas} 位用户进行了深度访谈</div>
+                <div class="confirm-options">
+                  <button class="confirm-btn primary" onclick="window.triggerReport && window.triggerReport()">📊 生成研究报告</button>
+                </div>
+              </div>
+            `)
             updateStepCardStatus('done')
           }
         } catch {
@@ -972,14 +1053,17 @@ async function triggerAutoInterview() {
     researchStore.updateStepProgress('interview', 'done')
     researchStore.updateStepProgress('report', 'active')
     uiStore.showToolbarButton('report')
-    updateStepCardFooter(`
-      <div class="confirm-block">
-        <div class="confirm-question">自动访谈完成 ✓ 共对 ${completedPersonas} 位用户进行了深度访谈</div>
-        <div class="confirm-options">
-          <button class="confirm-btn primary" onclick="window.triggerReport && window.triggerReport()">📊 生成研究报告</button>
-        </div>
-      </div>
-    `)
+    // 等 DOM 更新完成后再追加引导消息并滚动
+    await nextTick()
+    scrollToBottom()
+    appendConfirmMsg(
+      '自动深度访谈完成 ✓ 已对所有用户人设完成系统化访谈。建议生成研究报告以获得完整洞察。',
+      [
+        { label: '📊 生成研究报告', action: 'window.triggerReport && window.triggerReport()' }
+      ]
+    )
+    await nextTick()
+    scrollToBottom()
   } catch (e) {
     console.error('triggerAutoInterview error:', e)
     updateStepCardStatus('error')
@@ -1229,9 +1313,9 @@ const statusIcons: Record<string, string> = {
                       {{ uiStore.expandedSteps.includes(msg.stepData.id) ? '▼' : '▶' }}
                     </div>
                   </div>
-                  <div :class="['step-body', { visible: msg.stepData && uiStore.expandedSteps.includes(msg.stepData.id) }]">
-                    <div v-if="msg.stepData && msg.stepData.content" class="streaming-text">
-                      <div class="markdown" v-html="simpleMarkdown(msg.stepData.content)"></div>
+                  <div :id="msg.stepData && (msg.stepData.id + '-body')" :class="['step-body', { visible: msg.stepData && uiStore.expandedSteps.includes(msg.stepData.id) }]">
+                    <div class="streaming-text">
+                      <div class="markdown" v-html="msg.stepData && msg.stepData.content ? simpleMarkdown(msg.stepData.content) : ''"></div>
                       <span v-if="msg.stepData && msg.stepData.status === 'running'" class="cursor"></span>
                     </div>
                     <div v-if="msg.stepData && msg.stepData.footer && msg.stepData.status === 'done'" class="step-footer" v-html="msg.stepData.footer"></div>

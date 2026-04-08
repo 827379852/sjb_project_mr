@@ -414,20 +414,34 @@ async def scout_and_build(
         persona_ids_to_update = request.persona_ids or [p.id for p in existing_personas]
         all_posts = []
 
-        for persona_id in persona_ids_to_update:
-            persona = next((p for p in existing_personas if p.id == persona_id), None)
-            if not persona:
-                continue
+        # ── 辅助：获取人设描述 ────────────────────────────────────
+        def get_persona_desc(persona_obj):
+            return (
+                f"{persona_obj.name}，{persona_obj.age or ''}岁，"
+                f"{persona_obj.occupation or ''}，{(persona_obj.background or '')[:100]}"
+            )
 
-            # 为该人设生成专属搜索关键词
-            persona_desc = f"{persona.name}，{persona.age or ''}岁，{persona.occupation or ''}，{(persona.background or '')[:100]}"
-            persona_traits = ""
+        # ── 辅助：为一个人设执行完整侦察（3步 LLM 并行）───
+        async def scout_persona(
+            persona_obj,
+            persona_queue: asyncio.Queue,
+        ):
+            """
+            并行执行关键词生成 → 社媒搜索 → 人设增强，
+            将所有 SSE 事件推入 persona_queue。
+            """
+            p_id = persona_obj.id
+            p_name = persona_obj.name
+            p_data = persona_obj.persona_data or {}
+            p_desc = get_persona_desc(persona_obj)
+            research_t = research_topic
 
+            # ① 生成专属关键词
             keyword_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
 
-用户画像：{persona_desc}
-性格/价值观：{persona_traits}
-研究主题：{research_topic}
+用户画像：{p_desc}
+性格/价值观：
+研究主题：{research_t}
 
 要求：
 - 关键词要结合用户特征和研究主题
@@ -437,25 +451,34 @@ async def scout_and_build(
 JSON 输出：
 {{"keywords": ["关键词1 关键词2", "关键词3 关键词4"]}}"""
 
-            keyword_str = await _llm_complete(
+            keyword_task = _llm_complete(
                 [{"role": "user", "content": keyword_prompt}],
                 temperature=0.7,
                 json_mode=True,
             )
 
-            try:
-                keyword_data = json.loads(keyword_str)
-                persona_keywords = keyword_data.get("keywords", [])
-            except Exception:
-                persona_keywords = request.keywords
+            # ② 社媒搜索（依赖关键词结果）
+            async def search_and_rebuild(kw_result: str):
+                try:
+                    kw_data = json.loads(kw_result)
+                    persona_kw = kw_data.get("keywords", [])
+                except Exception:
+                    persona_kw = request.keywords
 
-            yield f"data: {json.dumps({'type': 'persona_scout_start', 'persona_id': persona_id, 'persona_name': persona.name, 'keywords': persona_keywords}, ensure_ascii=False)}\n\n"
+                await persona_queue.put((
+                    'persona_scout_start',
+                    {
+                        'persona_id': p_id,
+                        'persona_name': p_name,
+                        'keywords': persona_kw,
+                    }
+                ))
 
-            # 搜索社媒内容
-            scout_prompt = f"""你是一位擅长网络内容分析的研究员。
-请模拟从 {', '.join(request.platforms)} 平台上搜索关键词 "{', '.join(persona_keywords)}" 的真实用户内容。
+                # 社媒内容搜索
+                scout_prompt = f"""你是一位擅长网络内容分析的研究员。
+请模拟从 {', '.join(request.platforms)} 平台上搜索关键词 "{', '.join(persona_kw)}" 的真实用户内容。
 
-目标用户画像：{persona_desc}
+目标用户画像：{p_desc}
 
 生成 5-8 条该类用户可能发布的真实帖子/评论，要求：
 - 语气、视角要符合该用户画像特征
@@ -476,32 +499,47 @@ JSON 格式输出：
   "insights": ["关于该用户群体的核心洞察1", "核心洞察2"]
 }}"""
 
-            scout_result_str = await _llm_complete(
-                [{"role": "user", "content": scout_prompt}],
-                temperature=0.8,
-                json_mode=True,
-            )
+                scout_result_str = await _llm_complete(
+                    [{"role": "user", "content": scout_prompt}],
+                    temperature=0.8,
+                    json_mode=True,
+                )
 
-            try:
-                scout_data = json.loads(scout_result_str)
-                posts = scout_data.get("posts", [])
-                insights = scout_data.get("insights", [])
-            except Exception:
-                posts, insights = [], []
+                try:
+                    scout_data = json.loads(scout_result_str)
+                    posts = scout_data.get("posts", [])
+                    insights = scout_data.get("insights", [])
+                except Exception:
+                    posts, insights = [], []
 
-            for i, post in enumerate(posts):
-                post_with_persona = {**post, "persona_id": persona_id, "persona_name": persona.name}
-                yield f"data: {json.dumps({'type': 'post', 'index': len(all_posts) + i, 'post': post_with_persona, 'persona_id': persona_id}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.03)
-            all_posts.extend(posts)
+                # 逐条发送帖子
+                for post in posts:
+                    post_with_persona = {**post, "persona_id": p_id, "persona_name": p_name}
+                    await persona_queue.put((
+                        'post',
+                        {
+                            'post': post_with_persona,
+                            'persona_id': p_id,
+                        }
+                    ))
+                    await asyncio.sleep(0.03)
 
-            yield f"data: {json.dumps({'type': 'persona_insights', 'persona_id': persona_id, 'persona_name': persona.name, 'insights': insights}, ensure_ascii=False)}\n\n"
+                # 发送洞察
+                if insights:
+                    await persona_queue.put((
+                        'persona_insights',
+                        {
+                            'persona_id': p_id,
+                            'persona_name': p_name,
+                            'insights': insights,
+                        }
+                    ))
 
-            # 用侦察结果增强人设
-            rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
+                # 人设增强
+                rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
 
 原始人设：
-{json.dumps(persona.persona_data, ensure_ascii=False, indent=2)}
+{json.dumps(p_data, ensure_ascii=False, indent=2)}
 
 该用户群体的真实社媒声音：
 {json.dumps(posts, ensure_ascii=False, indent=2)}
@@ -516,33 +554,98 @@ JSON 格式输出：
 
 JSON 输出（在原有字段上修改，并添加 "scouted_updates" 字段说明修改原因）："""
 
-            try:
-                updated_str = await _llm_complete(
-                    [{"role": "user", "content": rebuild_prompt}],
-                    temperature=0.6,
-                    json_mode=True,
-                )
-                updated_persona = json.loads(updated_str)
-                updated_persona["id"] = persona_id
-                updated_persona["source"] = "scouted"
-                updated_persona["scout_keywords"] = persona_keywords
+                try:
+                    updated_str = await _llm_complete(
+                        [{"role": "user", "content": rebuild_prompt}],
+                        temperature=0.6,
+                        json_mode=True,
+                    )
+                    updated_persona = json.loads(updated_str)
+                    updated_persona["id"] = p_id
+                    updated_persona["source"] = "scouted"
+                    updated_persona["scout_keywords"] = persona_kw
 
-                # 更新数据库 - 使用新的 session
-                from app.core.database import AsyncSessionLocal
-                async with AsyncSessionLocal() as new_db:
-                    persona_to_update = await new_db.get(StudyPersona, persona_id)
-                    if persona_to_update:
-                        persona_to_update.persona_data = updated_persona
-                        persona_to_update.source = "scouted"
-                        await new_db.commit()
+                    # 更新数据库
+                    from app.core.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as new_db:
+                        persona_to_update = await new_db.get(StudyPersona, p_id)
+                        if persona_to_update:
+                            persona_to_update.persona_data = updated_persona
+                            persona_to_update.source = "scouted"
+                            await new_db.commit()
 
-                yield f"data: {json.dumps({'type': 'updated_persona', 'persona': updated_persona, 'persona_id': persona_id}, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                logger.error(f"人设重构失败: {e}")
+                    await persona_queue.put((
+                        'updated_persona',
+                        {'persona': updated_persona, 'persona_id': p_id}
+                    ))
+                except Exception as e:
+                    logger.error(f"人设重构失败: {e}")
 
-            yield f"data: {json.dumps({'type': 'persona_scout_done', 'persona_id': persona_id, 'persona_name': persona.name}, ensure_ascii=False)}\n\n"
+                # 标记完成，并携带 posts 数量
+                await persona_queue.put(('persona_scout_done', {'persona_id': p_id, 'persona_name': p_name, 'posts_count': len(posts)}))
+                return posts
 
-        # 保存整体侦察结果 - 使用新的 session
+            # 编排：先关键词 → 再搜索+增强（这两步可并行吗？不，搜索依赖关键词）
+            # 但不同人设之间完全并行
+            kw_result = await keyword_task
+            posts = await search_and_rebuild(kw_result)
+            return posts
+
+        # ── 并行启动所有人设的侦察任务 ──────────────────────────────
+        persona_queues: dict[str, asyncio.Queue] = {}
+        scout_tasks: list[asyncio.Task] = []
+
+        for persona_id in persona_ids_to_update:
+            persona = next((p for p in existing_personas if p.id == persona_id), None)
+            if not persona:
+                continue
+            q: asyncio.Queue = asyncio.Queue()
+            persona_queues[persona_id] = q
+            task = asyncio.create_task(scout_persona(persona, q))
+            scout_tasks.append(task)
+
+        # ── 主循环：实时收集各人设的事件并 yield ───────────────────
+        pending_tasks = set(scout_tasks)
+        while pending_tasks:
+            for p_id, q in persona_queues.items():
+                while not q.empty():
+                    evt_type, evt_data = await q.get()
+                    if evt_type == 'post':
+                        all_posts.append(evt_data['post'])
+                        yield f"data: {json.dumps({'type': 'post', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'persona_scout_start':
+                        yield f"data: {json.dumps({'type': 'persona_scout_start', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'persona_insights':
+                        yield f"data: {json.dumps({'type': 'persona_insights', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'updated_persona':
+                        yield f"data: {json.dumps({'type': 'updated_persona', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'persona_scout_done':
+                        yield f"data: {json.dumps({'type': 'persona_scout_done', **evt_data}, ensure_ascii=False)}\n\n"
+
+            # 检查已完成的任务
+            done_tasks = {t for t in pending_tasks if t.done()}
+            for t in done_tasks:
+                # 把该任务关联队列中剩余的事件全部读完
+                for p_id, q in persona_queues.items():
+                    while not q.empty():
+                        evt_type, evt_data = await q.get()
+                        if evt_type == 'post':
+                            all_posts.append(evt_data['post'])
+                            yield f"data: {json.dumps({'type': 'post', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'persona_scout_start':
+                            yield f"data: {json.dumps({'type': 'persona_scout_start', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'persona_insights':
+                            yield f"data: {json.dumps({'type': 'persona_insights', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'updated_persona':
+                            yield f"data: {json.dumps({'type': 'updated_persona', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'persona_scout_done':
+                            yield f"data: {json.dumps({'type': 'persona_scout_done', **evt_data}, ensure_ascii=False)}\n\n"
+                pending_tasks.discard(t)
+
+            if pending_tasks:
+                await asyncio.sleep(0.05)  # 避免 CPU 空转
+
+        # ── 保存整体侦察结果 ──────────────────────────────────────
         from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as new_db:
             scout_result = ScoutResult(
@@ -854,61 +957,118 @@ async def auto_interview(
             ]
 
         yield f"data: {json.dumps({'type': 'questions', 'questions': questions, 'count': len(questions)}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'status', 'message': f'提取到 {len(questions)} 个访谈问题，开始对 {len(personas)} 位用户进行访谈...'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'message': f'提取到 {len(questions)} 个访谈问题，开始对 {len(personas)} 位用户进行并行访谈...'}, ensure_ascii=False)}\n\n"
 
-        semaphore = asyncio.Semaphore(3)
-
-        async def interview_one(persona: StudyPersona) -> dict:
-            async with semaphore:
-                return await _auto_interview_persona(persona, questions, design_content)
-
-        for i, persona in enumerate(personas):
-            name = persona.name or f"用户{i+1}"
-            yield f"data: {json.dumps({'type': 'interview_start', 'persona_id': persona.id, 'persona_name': name, 'index': i, 'total': len(personas)}, ensure_ascii=False)}\n\n"
+        # ── 辅助：为一个 persona 执行完整访谈，实时推送每对 QA ──────────
+        async def interview_persona(
+            persona: StudyPersona,
+            index: int,
+            total: int,
+            q: asyncio.Queue,
+        ):
+            p_id = persona.id
+            p_name = persona.name or f"用户{index + 1}"
 
             try:
-                result = await interview_one(persona)
+                await q.put((
+                    'interview_start',
+                    {'persona_id': p_id, 'persona_name': p_name, 'index': index, 'total': total}
+                ))
+
+                result = await _auto_interview_persona(persona, questions, design_content)
+
+                # 实时推送每一对 QA
+                for j, qa in enumerate(result["qa"]):
+                    await q.put((
+                        'qa',
+                        {
+                            'persona_id': p_id,
+                            'persona_name': p_name,
+                            'index': j,
+                            'question': qa['question'],
+                            'answer': qa['answer'],
+                        }
+                    ))
+
+                # 保存访谈记录到数据库
+                from app.core.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as new_db:
+                    interview = StudyInterview(
+                        study_id=request.study_id,
+                        persona_id=p_id,
+                        persona_name=p_name,
+                        messages=[
+                            msg
+                            for qa in result["qa"]
+                            for msg in [
+                                {"role": "user", "content": qa["question"]},
+                                {"role": "assistant", "content": qa["answer"]},
+                            ]
+                        ],
+                    )
+                    new_db.add(interview)
+                    await new_db.commit()
+
+                await q.put((
+                    'interview_done',
+                    {'persona_id': p_id, 'persona_name': p_name, 'qa_count': result.get('total_questions', len(result["qa"]))}
+                ))
+
             except Exception as e:
-                result = {
-                    "persona_id": persona.id,
-                    "persona_name": name,
-                    "qa": [{"question": "（访谈失败）", "answer": str(e)}],
-                    "total_questions": 0,
-                }
+                logger.error(f"[AutoInterview] persona {p_id} 访谈失败: {e}")
+                await q.put((
+                    'interview_start',
+                    {'persona_id': p_id, 'persona_name': p_name, 'index': index, 'total': total}
+                ))
+                await q.put((
+                    'qa',
+                    {'persona_id': p_id, 'persona_name': p_name, 'index': 0, 'question': '（访谈失败）', 'answer': str(e)}
+                ))
+                await q.put((
+                    'interview_done',
+                    {'persona_id': p_id, 'persona_name': p_name, 'qa_count': 0}
+                ))
 
-            for j, qa in enumerate(result["qa"]):
-                qa_event = json.dumps({
-                    'type': 'qa',
-                    'persona_id': persona.id,
-                    'persona_name': name,
-                    'index': j,
-                    'question': qa['question'],
-                    'answer': qa['answer'],
-                }, ensure_ascii=False)
-                yield f"data: {qa_event}\n\n"
+        # ── 并行启动所有人设的访谈任务 ──────────────────────────────
+        persona_queues: dict[str, asyncio.Queue] = {}
+        interview_tasks: list[asyncio.Task] = []
 
-            # 保存访谈记录 - 使用新的 session
-            from app.core.database import AsyncSessionLocal
-            async with AsyncSessionLocal() as new_db:
-                interview = StudyInterview(
-                    study_id=request.study_id,
-                    persona_id=persona.id,
-                    persona_name=name,
-                    messages=[
-                        msg
-                        for qa in result["qa"]
-                        for msg in [
-                            {"role": "user", "content": qa["question"]},
-                            {"role": "assistant", "content": qa["answer"]},
-                        ]
-                    ],
-                )
-                new_db.add(interview)
-                await new_db.commit()
+        for i, persona in enumerate(personas):
+            q: asyncio.Queue = asyncio.Queue()
+            persona_queues[persona.id] = q
+            task = asyncio.create_task(interview_persona(persona, i, len(personas), q))
+            interview_tasks.append(task)
 
-            yield f"data: {json.dumps({'type': 'interview_done', 'persona_id': persona.id, 'persona_name': name, 'qa_count': result['total_questions']}, ensure_ascii=False)}\n\n"
+        # ── 主循环：实时收集各人设的事件并 yield ───────────────────
+        pending_tasks = set(interview_tasks)
+        while pending_tasks:
+            for p_id, q in persona_queues.items():
+                while not q.empty():
+                    evt_type, evt_data = await q.get()
+                    if evt_type == 'interview_start':
+                        yield f"data: {json.dumps({'type': 'interview_start', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'qa':
+                        yield f"data: {json.dumps({'type': 'qa', **evt_data}, ensure_ascii=False)}\n\n"
+                    elif evt_type == 'interview_done':
+                        yield f"data: {json.dumps({'type': 'interview_done', **evt_data}, ensure_ascii=False)}\n\n"
 
-        # 更新研究状态
+            done_tasks = {t for t in pending_tasks if t.done()}
+            for t in done_tasks:
+                for p_id, q in persona_queues.items():
+                    while not q.empty():
+                        evt_type, evt_data = await q.get()
+                        if evt_type == 'interview_start':
+                            yield f"data: {json.dumps({'type': 'interview_start', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'qa':
+                            yield f"data: {json.dumps({'type': 'qa', **evt_data}, ensure_ascii=False)}\n\n"
+                        elif evt_type == 'interview_done':
+                            yield f"data: {json.dumps({'type': 'interview_done', **evt_data}, ensure_ascii=False)}\n\n"
+                pending_tasks.discard(t)
+
+            if pending_tasks:
+                await asyncio.sleep(0.05)
+
+        # ── 更新研究状态 ────────────────────────────────────────────
         from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as new_db:
             study_to_update = await new_db.get(Study, request.study_id)
