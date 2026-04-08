@@ -1,7 +1,8 @@
+from __future__ import annotations
 """
 问卷 Schemas
 """
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -16,10 +17,10 @@ class Question(BaseModel):
     type: str = Field(..., description="题型: single_choice | multi_choice | scale | text | nps | ranking")
     text: str = Field(..., description="题目内容")
     required: bool = True
-    options: Optional[list[str]] = None         # 选择题选项
+    options: Optional[List[str]] = None         # 选择题选项
     scale_min: Optional[int] = None              # 量表题最小值
     scale_max: Optional[int] = None              # 量表题最大值
-    scale_labels: Optional[dict[str, str]] = None  # 量表标签 {"1": "非常不满意", "5": "非常满意"}
+    scale_labels: Optional[Dict[str, str]] = None  # 量表标签 {"1": "非常不满意", "5": "非常满意"}
     placeholder: Optional[str] = None           # 开放题提示
 
 
@@ -27,11 +28,11 @@ class Section(BaseModel):
     id: str
     title: str
     description: str = ""
-    questions: list[Question]
+    questions: List[Question]
 
 
 class QuestionnaireSchema(BaseModel):
-    sections: list[Section]
+    sections: List[Section]
     estimated_minutes: int = Field(5, description="预计完成时间（分钟）")
 
 

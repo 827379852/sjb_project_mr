@@ -1,7 +1,8 @@
+from __future__ import annotations
 """
 调研运行 & 结果 Schemas
 """
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field
 from app.models.research_run import RunStatus
@@ -40,8 +41,8 @@ class SurveyResponseOut(BaseModel):
     run_id: str
     respondent_id: str
     questionnaire_id: str
-    answers: dict
-    raw_dialog: list
+    answers: Dict[str, Any]
+    raw_dialog: List[Dict[str, Any]]
     sentiment: str
     created_at: datetime
 
@@ -56,17 +57,17 @@ class QuestionStats(BaseModel):
     question_type: str
     total_responses: int
     # 选择题：选项频率分布
-    option_distribution: Optional[dict[str, int]] = None
-    option_percentage: Optional[dict[str, float]] = None
+    option_distribution: Optional[Dict[str, int]] = None
+    option_percentage: Optional[Dict[str, float]] = None
     # 量表/NPS：统计值
     mean: Optional[float] = None
     median: Optional[float] = None
     std_dev: Optional[float] = None
     # 开放题：关键词与主题摘要
-    keywords: Optional[list[str]] = None
-    themes: Optional[list[dict]] = None
+    keywords: Optional[List[str]] = None
+    themes: Optional[List[Dict[str, Any]]] = None
     # 情感分布
-    sentiment_distribution: Optional[dict[str, int]] = None
+    sentiment_distribution: Optional[Dict[str, int]] = None
 
 
 class RunAnalyticsOut(BaseModel):
@@ -75,12 +76,12 @@ class RunAnalyticsOut(BaseModel):
     total_respondents: int
     completed_at: Optional[datetime]
     # 各题目统计
-    question_stats: list[QuestionStats]
+    question_stats: List[QuestionStats]
     # 整体情感分布
-    overall_sentiment: dict[str, int]
+    overall_sentiment: Dict[str, int]
     # 关键洞察（LLM 生成）
-    key_insights: list[str]
+    key_insights: List[str]
     # 原始摘要报告（Markdown）
     summary_report: str
     # 受访者画像分布统计
-    demographic_breakdown: dict[str, Any]
+    demographic_breakdown: Dict[str, Any]

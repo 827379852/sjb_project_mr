@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 AgentSociety 适配器实现
 将 agentsociety 的能力封装为标准 AgentBackendAdapter 接口

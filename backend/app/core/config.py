@@ -1,7 +1,10 @@
 """
 应用配置模块 - 支持通过环境变量灵活配置
 """
-from typing import Literal
+try:
+    from typing import Literal, List
+except ImportError:
+    from typing_extensions import Literal, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,7 +26,7 @@ class Settings(BaseSettings):
     # ── 服务器配置 ────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    ALLOWED_ORIGINS: list[str] = ["*"]
+    ALLOWED_ORIGINS: List[str] = ["*"]
 
     # ── 数据库配置 ────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./market_research.db"

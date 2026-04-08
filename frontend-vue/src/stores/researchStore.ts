@@ -7,6 +7,8 @@ export const useResearchStore = defineStore('research', () => {
   const studyId = ref<string | null>(null)
   const studyTitle = ref('新研究')
   const phase = ref<Phase>('idle')
+  const userRequest = ref('')
+  const designContent = ref('')
   const personas = ref<Persona[]>([])
   const selectedPersona = ref<Persona | null>(null)
   const interviewHistory = ref<Record<string, InterviewMessage[]>>({})
@@ -80,6 +82,22 @@ export const useResearchStore = defineStore('research', () => {
     reportContent.value = content
   }
 
+  function setUserRequest(request: string) {
+    userRequest.value = request
+  }
+
+  function setDesignContent(content: string) {
+    designContent.value = content
+  }
+
+  function setPersonas(list: Persona[]) {
+    personas.value = list
+  }
+
+  function setInterviewHistory(history: Record<string, InterviewMessage[]>) {
+    interviewHistory.value = history
+  }
+
   function updateStepProgress(step: keyof StepProgress, status: StepStatus) {
     stepProgress.value[step] = status
   }
@@ -88,6 +106,8 @@ export const useResearchStore = defineStore('research', () => {
     studyId.value = null
     studyTitle.value = '新研究'
     phase.value = 'idle'
+    userRequest.value = ''
+    designContent.value = ''
     personas.value = []
     selectedPersona.value = null
     interviewHistory.value = {}
@@ -108,6 +128,8 @@ export const useResearchStore = defineStore('research', () => {
     studyId,
     studyTitle,
     phase,
+    userRequest,
+    designContent,
     personas,
     selectedPersona,
     interviewHistory,
@@ -122,6 +144,10 @@ export const useResearchStore = defineStore('research', () => {
     setStudyId,
     setStudyTitle,
     setPhase,
+    setUserRequest,
+    setDesignContent,
+    setPersonas,
+    setInterviewHistory,
     addPersona,
     updatePersona,
     setSelectedPersona,

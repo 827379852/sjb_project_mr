@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(python run.py)",
+      "Bash(python -c \" run.py\" restart服务)",
+      "Bash(python -c \"from typing import Literal; import typing_extensions\")",
+      "Bash(sqlite3 market_research.db \".schema studies\")",
+      "Bash(sqlite3 market_research.db \"SELECT id, title, length\\(user_request\\) as ur_len, length\\(design_content\\) as dc_len FROM studies LIMIT 5;\")",
+      "Bash(python -c \"from app.api.v1.endpoints.research_flow import router; print\\('Import OK'\\)\")",
+      "Bash(sed:*)",
+      "Bash(E:/annconda/envs/owl/python.exe -c \"from app.api.v1.endpoints.research_flow import router; print\\('Import OK'\\)\")"
     ]
   }
 }

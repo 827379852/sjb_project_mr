@@ -1,7 +1,7 @@
 """
 标准 API 响应模型 - 所有接口统一返回格式
 """
-from typing import Generic, TypeVar, Optional, Any
+from typing import Generic, TypeVar, Optional, Any, List
 from pydantic import BaseModel
 
 T = TypeVar("T")
@@ -24,14 +24,14 @@ class ApiResponse(BaseModel, Generic[T]):
 
 class PaginatedData(BaseModel, Generic[T]):
     """分页数据封装"""
-    items: list[T]
+    items: List[T]
     total: int
     page: int
     page_size: int
     has_more: bool
 
     @classmethod
-    def build(cls, items: list[T], total: int, page: int, page_size: int) -> "PaginatedData[T]":
+    def build(cls, items: List[T], total: int, page: int, page_size: int) -> "PaginatedData[T]":
         return cls(
             items=items,
             total=total,

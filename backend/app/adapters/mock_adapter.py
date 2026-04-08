@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Mock 后端适配器（用于开发/测试，无需 LLM 配置）
 """

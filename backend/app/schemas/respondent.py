@@ -1,7 +1,8 @@
+from __future__ import annotations
 """
 受访者 Schemas
 """
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -9,15 +10,15 @@ from pydantic import BaseModel, Field
 # ── 受访者配置 ─────────────────────────────────────────────────────
 
 class DemographicsConfig(BaseModel):
-    age_range: list[int] = Field([18, 65], description="年龄范围 [min, max]")
-    gender_distribution: dict[str, float] = Field(
+    age_range: List[int] = Field([18, 65], description="年龄范围 [min, max]")
+    gender_distribution: Dict[str, float] = Field(
         {"male": 0.5, "female": 0.5},
         description="性别分布比例"
     )
-    occupation_types: list[str] = Field([], description="职业类型列表")
-    income_level: list[str] = Field([], description="收入层级")
+    occupation_types: List[str] = Field([], description="职业类型列表")
+    income_level: List[str] = Field([], description="收入层级")
     region: str = Field("中国", description="地区描述")
-    custom_traits: list[str] = Field([], description="自定义特征标签")
+    custom_traits: List[str] = Field([], description="自定义特征标签")
 
 
 class RespondentConfigCreate(BaseModel):
@@ -60,7 +61,7 @@ class RespondentProfile(BaseModel):
     personality: str = ""
     consumption_habits: str = ""
     background: str = ""
-    custom_attributes: dict = {}
+    custom_attributes: Dict[str, Any] = {}
 
 
 class RespondentOut(BaseModel):

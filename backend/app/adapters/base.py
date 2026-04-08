@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Agent 后端适配器抽象接口
 =============================

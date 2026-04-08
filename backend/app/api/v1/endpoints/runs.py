@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 调研运行控制与结果接口
 """

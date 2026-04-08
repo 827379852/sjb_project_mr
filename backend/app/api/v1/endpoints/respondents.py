@@ -1,6 +1,8 @@
+from __future__ import annotations
 """
 受访者管理接口
 """
+from typing import List
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -91,7 +93,7 @@ async def delete_config(config_id: str, db: AsyncSession = Depends(get_db)):
 
 # ── 受访者 Agent 生成与管理 ────────────────────────────────────────
 
-@router.post("/{config_id}/generate", response_model=ApiResponse[list[RespondentOut]])
+@router.post("/{config_id}/generate", response_model=ApiResponse[List[RespondentOut]])
 async def generate_respondents(
     config_id: str,
     db: AsyncSession = Depends(get_db),
@@ -141,7 +143,7 @@ async def generate_respondents(
     )
 
 
-@router.get("/{config_id}/respondents", response_model=ApiResponse[list[RespondentOut]])
+@router.get("/{config_id}/respondents", response_model=ApiResponse[List[RespondentOut]])
 async def list_respondents(config_id: str, db: AsyncSession = Depends(get_db)):
     """获取配置下所有受访者列表"""
     config = await db.get(RespondentConfig, config_id)

@@ -3,6 +3,7 @@ from app.models.research_project import ResearchProject, ProjectStatus
 from app.models.questionnaire import Questionnaire
 from app.models.respondent import RespondentConfig, Respondent
 from app.models.research_run import ResearchRun, SurveyResponse, RunStatus
+from app.models.study import Study, StudyPersona, StudyInterview, ScoutResult, StudyReport
 
 __all__ = [
     "User",
@@ -10,4 +11,5 @@ __all__ = [
     "Questionnaire",
     "RespondentConfig", "Respondent",
     "ResearchRun", "SurveyResponse", "RunStatus",
+    "Study", "StudyPersona", "StudyInterview", "ScoutResult", "StudyReport",
 ]
