@@ -15,7 +15,11 @@
       "Bash(python -m py_compile app/api/v1/endpoints/admin.py)",
       "Bash(npx tsc:*)",
       "Bash(npx eslint:*)",
-      "Bash(python -m py_compile app/api/v1/endpoints/research_flow.py)"
+      "Bash(python -m py_compile app/api/v1/endpoints/research_flow.py)",
+      "Bash(python market_research_cli.py --api-key \"mr_live_uuCQR2LUTbOMR5MJqh7LU4EJq1ZXaoNmwLQo29lucn8\" \"研究年轻女性（18-30岁）对国产美妆品牌的态度，分析她们选择或放弃国货的原因\")",
+      "Bash(zip -r market-research-sdk.zip market-research-sdk/)",
+      "Bash(powershell -Command \"Compress-Archive -Path 'market-research-sdk/*' -DestinationPath 'market-research-sdk.zip' -Force\")",
+      "WebSearch"
     ]
   }
 }
