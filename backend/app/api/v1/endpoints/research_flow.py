@@ -26,7 +26,7 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.response import ApiResponse
-from app.models.user import User
+from app.models.user import User, TASK_COST_CREDITS
 from app.models.study import Study, StudyPersona, StudyInterview, ScoutResult, StudyReport
 from app.dependencies.auth import get_current_active_user
 from app.schemas.study import StudyOut, StudyDetailOut
@@ -193,6 +193,17 @@ async def design_study(
 
     返回：Server-Sent Events 流式响应
     """
+    # 检查积分（超级管理员不需要检查）
+    if not current_user.is_superuser:
+        if current_user.credits < TASK_COST_CREDITS:
+            raise HTTPException(
+                status_code=402,
+                detail=f"积分不足，当前积分 {current_user.credits}，需要 {TASK_COST_CREDITS} 积分"
+            )
+        # 扣除积分
+        current_user.credits -= TASK_COST_CREDITS
+        await db.flush()
+
     # 创建 Study 记录
     title = request.user_request[:30] + ("..." if len(request.user_request) > 30 else "")
     study = Study(
@@ -207,6 +218,7 @@ async def design_study(
     await db.refresh(study)
 
     study_id = study.id
+    user_id = current_user.id
 
     system_prompt = """你是一位资深的定性用户研究员，擅长设计用户访谈框架。
 你的任务是分析用户的研究需求，帮助他们：
@@ -232,24 +244,38 @@ async def design_study(
 
     async def stream_generator():
         full_content = ""
+        has_error = False
         yield f"data: {json.dumps({'type': 'study_id', 'study_id': study_id}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'step', 'step': 'design_study', 'status': 'running'}, ensure_ascii=False)}\n\n"
 
-        async for chunk in _llm_stream([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]):
-            full_content += chunk
-            yield f"data: {json.dumps({'type': 'content', 'delta': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            async for chunk in _llm_stream([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]):
+                full_content += chunk
+                yield f"data: {json.dumps({'type': 'content', 'delta': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            has_error = True
+            logger.error(f"研究设计失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
         # 重新获取数据库 session 并更新 Study 记录
         from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as new_db:
-            study_to_update = await new_db.get(Study, study_id)
-            if study_to_update:
-                study_to_update.design_content = full_content
-                study_to_update.current_phase = "post-design"
-                await new_db.commit()
+            if not has_error:
+                study_to_update = await new_db.get(Study, study_id)
+                if study_to_update:
+                    study_to_update.design_content = full_content
+                    study_to_update.current_phase = "post-design"
+                    await new_db.commit()
+            else:
+                # 失败时返还积分（非超级管理员）
+                user_to_refund = await new_db.get(User, user_id)
+                if user_to_refund and not user_to_refund.is_superuser:
+                    user_to_refund.credits += TASK_COST_CREDITS
+                    await new_db.commit()
+                    yield f"data: {json.dumps({'type': 'credits_refund', 'amount': TASK_COST_CREDITS, 'message': '任务失败，积分已返还'}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'step', 'step': 'design_study', 'status': 'done', 'study_id': study_id}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"

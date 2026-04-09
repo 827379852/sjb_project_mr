@@ -21,6 +21,12 @@ const router = createRouter({
       name: 'Home',
       component: () => import('@/views/HomeView.vue'),
       meta: { requiresAuth: true }
+    },
+    {
+      path: '/admin',
+      name: 'Admin',
+      component: () => import('@/views/AdminPage.vue'),
+      meta: { requiresAuth: true, requiresSuperuser: true }
     }
   ]
 })
@@ -30,6 +36,8 @@ router.beforeEach((to, _from, next) => {
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'Login', query: { redirect: to.fullPath } })
+  } else if (to.meta.requiresSuperuser && !authStore.isSuperuser) {
+    next({ name: 'Home' })
   } else if (to.meta.guest && authStore.isAuthenticated) {
     next({ name: 'Home' })
   } else {

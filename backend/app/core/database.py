@@ -1,6 +1,8 @@
 """
 数据库初始化与连接管理
 """
+from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -42,3 +44,34 @@ async def init_db() -> None:
     from app.models import user, research_project, questionnaire, respondent, research_run, study  # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # 初始化超级管理员
+    await _init_superuser()
+
+
+async def _init_superuser() -> None:
+    """初始化超级管理员账号"""
+    from app.models.user import User
+    from app.core.security import get_password_hash
+
+    async with AsyncSessionLocal() as session:
+        # 检查是否已存在 admin 用户
+        result = await session.execute(select(User).where(User.email == "admin@qq.com"))
+        existing_admin = result.scalar_one_or_none()
+
+        if existing_admin:
+            logger.info("超级管理员账号已存在")
+            return
+
+        # 创建超级管理员
+        admin = User(
+            email="admin@qq.com",
+            name="超级管理员",
+            hashed_password=get_password_hash("123456"),
+            is_superuser=True,
+            is_active=True,
+            credits=999999,  # 超级管理员给足够的积分
+        )
+        session.add(admin)
+        await session.commit()
+        logger.info("✅ 超级管理员账号创建成功 (admin@qq.com / 123456)")

@@ -81,6 +81,23 @@ async def get_current_active_user(
     return current_user
 
 
+async def get_current_superuser(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    """
+    获取当前超级管理员用户
+
+    Raises:
+        HTTPException: 用户不是超级管理员
+    """
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要超级管理员权限",
+        )
+    return current_user
+
+
 # 可选的用户依赖（允许未认证访问）
 async def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),

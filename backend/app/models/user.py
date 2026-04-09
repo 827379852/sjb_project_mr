@@ -3,10 +3,15 @@
 """
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, func
+from sqlalchemy import String, Boolean, DateTime, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+# 新用户注册赠送的积分
+DEFAULT_CREDITS = 100
+# 每次任务消耗的积分
+TASK_COST_CREDITS = 10
 
 
 class User(Base):
@@ -18,5 +23,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    credits: Mapped[int] = mapped_column(Integer, default=DEFAULT_CREDITS)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -6,6 +6,8 @@ export interface User {
   email: string
   name: string
   is_active: boolean
+  is_superuser: boolean
+  credits: number
   created_at: string
 }
 
@@ -29,6 +31,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   // Computed
   const isAuthenticated = computed(() => !!token.value)
+  const isSuperuser = computed(() => user.value?.is_superuser ?? false)
 
   // Actions
   function setToken(newToken: string | null) {
@@ -60,6 +63,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     // Computed
     isAuthenticated,
+    isSuperuser,
     // Actions
     setToken,
     setUser,

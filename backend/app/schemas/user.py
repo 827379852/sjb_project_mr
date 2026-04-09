@@ -25,9 +25,18 @@ class UserOut(BaseModel):
     email: str
     name: str
     is_active: bool
+    is_superuser: bool = False
+    credits: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    """用户更新请求"""
+    name: Optional[str] = Field(None, min_length=1, max_length=50, description="用户名")
+    is_active: Optional[bool] = Field(None, description="是否激活")
+    credits: Optional[int] = Field(None, ge=0, description="积分")
 
 
 class Token(BaseModel):
@@ -39,3 +48,15 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     """Token 数据"""
     user_id: Optional[str] = None
+
+
+class CreditsDeduct(BaseModel):
+    """积分扣除请求"""
+    amount: int = Field(..., ge=1, description="扣除数量")
+    reason: str = Field(..., description="扣除原因")
+
+
+class CreditsRefund(BaseModel):
+    """积分返还请求"""
+    amount: int = Field(..., ge=1, description="返还数量")
+    reason: str = Field(..., description="返还原因")

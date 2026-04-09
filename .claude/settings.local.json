@@ -10,7 +10,11 @@
       "Bash(sqlite3 market_research.db \"SELECT id, title, length\\(user_request\\) as ur_len, length\\(design_content\\) as dc_len FROM studies LIMIT 5;\")",
       "Bash(python -c \"from app.api.v1.endpoints.research_flow import router; print\\('Import OK'\\)\")",
       "Bash(sed:*)",
-      "Bash(E:/annconda/envs/owl/python.exe -c \"from app.api.v1.endpoints.research_flow import router; print\\('Import OK'\\)\")"
+      "Bash(E:/annconda/envs/owl/python.exe -c \"from app.api.v1.endpoints.research_flow import router; print\\('Import OK'\\)\")",
+      "Bash(python -c \"from app.api.v1.endpoints import admin; print\\('Admin endpoint OK'\\)\")",
+      "Bash(python -m py_compile app/api/v1/endpoints/admin.py)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)"
     ]
   }
 }

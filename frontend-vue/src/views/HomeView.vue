@@ -387,6 +387,14 @@ async function runDesignStudy(userRequest: string) {
         router.push('/login')
         return
       }
+      if (res.status === 402) {
+        // 积分不足
+        const errorData = await res.json()
+        updateStepCardStatus('error')
+        updateStepCardContent(`❌ ${errorData.detail || '积分不足，无法开始研究'}`)
+        researchStore.setStreaming(false)
+        return
+      }
       updateStepCardStatus('error')
       researchStore.setStreaming(false)
       return
