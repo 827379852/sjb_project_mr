@@ -133,10 +133,11 @@ async def list_studies(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """获取当前用户的研究列表"""
+    """获取当前用户的研究列表（只返回前端创建的研究，不包含 API 调用创建的）"""
     result = await db.execute(
         select(Study)
         .where(Study.user_id == current_user.id)
+        .where(Study.source != "api")  # 排除 API 调用创建的研究
         .order_by(Study.updated_at.desc())
     )
     studies = result.scalars().all()
@@ -1387,7 +1388,7 @@ async def upload_context(
     })
 
 
-# ── 全自动研究 API（API Key 认证）────────────────────────────────────
+# ── 全自动研究 API（异步模式，API Key 认证）────────────────────────────────────
 
 class AutoResearchRequest(BaseModel):
     """全自动研究请求"""
@@ -1396,67 +1397,30 @@ class AutoResearchRequest(BaseModel):
     platforms: list[str] = Field(["小红书", "微博", "抖音"], description="社媒侦察平台")
 
 
-@router.post("/auto-research")
-async def auto_research(
-    request: AutoResearchRequest,
-    current_user: User = Depends(get_user_by_api_key),
+# 后台任务存储（用于追踪正在执行的任务）
+_active_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _run_auto_research(
+    study_id: str,
+    user_id: str,
+    user_request: str,
+    persona_count: int,
+    platforms: list[str],
+    title: str,
+    has_deducted_credits: bool = False,
 ):
-    """
-    全自动市场研究 API（通过 X-API-Key 认证）
-
-    输入研究需求，自动完成：
-    1. 设计研究框架
-    2. 生成用户人设
-    3. 社交媒体侦察
-    4. 自动深度访谈
-    5. 生成研究报告
-
-    返回：流式 SSE 响应，包含每个步骤的进度和结果
-    """
+    """后台执行全自动研究任务"""
     from app.core.database import AsyncSessionLocal
 
-    # 创建 Study 记录
-    title = request.user_request[:30] + ("..." if len(request.user_request) > 30 else "")
-    async with AsyncSessionLocal() as db:
-        study = Study(
-            user_id=current_user.id,
-            title=title,
-            user_request=request.user_request,
-            status="in_progress",
-            current_phase="designing",
-        )
-        db.add(study)
-        await db.commit()
-        await db.refresh(study)
-        study_id = study.id
+    task_completed = False
 
-    # 检查积分（超级管理员不需要检查）
-    if not current_user.is_superuser:
-        if current_user.credits < TASK_COST_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"积分不足，当前积分 {current_user.credits}，需要 {TASK_COST_CREDITS} 积分"
-            )
-
-    user_id = current_user.id
-    has_deducted_credits = False
-
-    async def stream_generator():
-        nonlocal has_deducted_credits
-        task_completed = False
-
-        # 发送开始事件
-        yield f"data: {json.dumps({'type': 'study_id', 'study_id': study_id}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'step', 'step': 'auto_research', 'status': 'running', 'message': '开始全自动市场研究...'}, ensure_ascii=False)}\n\n"
-
-        try:
-            # ═══════════════════════════════════════════════════════
-            # Step 1: 设计研究框架
-            # ═══════════════════════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'design', 'status': 'running', 'message': '正在设计研究框架...'}, ensure_ascii=False)}\n\n"
-
-            design_content = ""
-            design_system = """你是一位资深的定性用户研究员，擅长设计用户访谈框架。
+    try:
+        # ═══════════════════════════════════════════════════════
+        # Step 1: 设计研究框架
+        # ═══════════════════════════════════════════════════════
+        design_content = ""
+        design_system = """你是一位资深的定性用户研究员，擅长设计用户访谈框架。
 你的任务是分析用户的研究需求，帮助他们：
 1. 明确研究目标（清晰、可验证）
 2. 定义目标人群
@@ -1465,8 +1429,8 @@ async def auto_research(
 
 请用结构化的方式输出，让研究员可以直接使用。"""
 
-            design_user = f"""研究需求：
-{request.user_request}
+        design_user = f"""研究需求：
+{user_request}
 
 请帮我设计一个完整的定性用户研究方案，包括：
 1. 研究目标（1-2句话）
@@ -1476,51 +1440,38 @@ async def auto_research(
 
 用清晰的中文输出。"""
 
-            async for chunk in _llm_stream([
-                {"role": "system", "content": design_system},
-                {"role": "user", "content": design_user},
-            ]):
-                design_content += chunk
-                yield f"data: {json.dumps({'type': 'design_content', 'delta': chunk}, ensure_ascii=False)}\n\n"
+        async for chunk in _llm_stream([
+            {"role": "system", "content": design_system},
+            {"role": "user", "content": design_user},
+        ]):
+            design_content += chunk
 
-            # 保存设计内容
-            async with AsyncSessionLocal() as new_db:
-                study_to_update = await new_db.get(Study, study_id)
-                if study_to_update:
-                    study_to_update.design_content = design_content
-                    study_to_update.current_phase = "post-design"
-                    await new_db.commit()
+        # 保存设计内容
+        async with AsyncSessionLocal() as db:
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.design_content = design_content
+                study_to_update.current_phase = "post-design"
+                await db.commit()
 
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'design', 'status': 'done'}, ensure_ascii=False)}\n\n"
+        # ═══════════════════════════════════════════════════════
+        # Step 2: 生成用户人设
+        # ═══════════════════════════════════════════════════════
+        # 积分已在提交时扣除，这里不再重复扣除
 
-            # ═══════════════════════════════════════════════════════
-            # Step 2: 生成用户人设
-            # ═══════════════════════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'personas', 'status': 'running', 'message': f'正在生成 {request.persona_count} 个用户人设...'}, ensure_ascii=False)}\n\n"
-
-            # 扣除积分
-            async with AsyncSessionLocal() as new_db:
-                user_to_deduct = await new_db.get(User, user_id)
-                if user_to_deduct and not user_to_deduct.is_superuser:
-                    if user_to_deduct.credits >= TASK_COST_CREDITS:
-                        user_to_deduct.credits -= TASK_COST_CREDITS
-                        await new_db.commit()
-                        has_deducted_credits = True
-                        yield f"data: {json.dumps({'type': 'credits_deducted', 'amount': TASK_COST_CREDITS, 'remaining': user_to_deduct.credits}, ensure_ascii=False)}\n\n"
-
-            persona_system = """你是一位消费者洞察专家，擅长构建真实、有深度的用户画像。
+        persona_system = """你是一位消费者洞察专家，擅长构建真实、有深度的用户画像。
 请基于研究背景，生成具有代表性的目标用户画像。每个人设要：
 - 有真实的生活背景和动机
 - 体现出对研究主题的不同态度（支持/中立/怀疑）
 - 有具体的痛点和期望
 - 严格按照 JSON 格式输出"""
 
-            persona_user = f"""研究背景：
+        persona_user = f"""研究背景：
 {design_content[:500]}
 
 目标人群描述：根据研究背景自行判断
 
-请生成 {request.persona_count} 个用户人设，确保覆盖不同年龄、职业、态度、使用场景的关键人群。
+请生成 {persona_count} 个用户人设，确保覆盖不同年龄、职业、态度、使用场景的关键人群。
 
 输出 JSON 格式：
 {{
@@ -1538,80 +1489,74 @@ async def auto_research(
   ]
 }}"""
 
-            try:
-                persona_result = await _llm_complete(
-                    [{"role": "system", "content": persona_system}, {"role": "user", "content": persona_user}],
-                    temperature=0.85,
-                    json_mode=True,
+        try:
+            persona_result = await _llm_complete(
+                [{"role": "system", "content": persona_system}, {"role": "user", "content": persona_user}],
+                temperature=0.85,
+                json_mode=True,
+            )
+            personas_data = json.loads(persona_result).get("personas", [])
+        except Exception as e:
+            logger.error(f"人设生成失败: {e}")
+            personas_data = []
+
+        # 保存人设到数据库
+        personas = []
+        for i, p in enumerate(personas_data[:persona_count]):
+            persona_id = str(uuid.uuid4())
+            persona = {**p, "id": persona_id, "source": "generated"}
+            personas.append(persona)
+
+            async with AsyncSessionLocal() as db:
+                db_persona = StudyPersona(
+                    id=persona_id,
+                    study_id=study_id,
+                    name=p.get("name", f"用户{i+1}"),
+                    age=p.get("age"),
+                    occupation=p.get("occupation", ""),
+                    city=p.get("city", ""),
+                    background=p.get("background", ""),
+                    persona_data=p,
+                    source="generated",
                 )
-                personas_data = json.loads(persona_result).get("personas", [])
-            except Exception as e:
-                logger.error(f"人设生成失败: {e}")
-                personas_data = []
+                db.add(db_persona)
+                await db.commit()
 
-            # 保存人设到数据库
-            personas = []
-            for i, p in enumerate(personas_data[:request.persona_count]):
-                persona_id = str(uuid.uuid4())
-                persona = {**p, "id": persona_id, "source": "generated"}
-                personas.append(persona)
+        async with AsyncSessionLocal() as db:
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.current_phase = "personas"
+                await db.commit()
 
-                async with AsyncSessionLocal() as new_db:
-                    db_persona = StudyPersona(
-                        id=persona_id,
-                        study_id=study_id,
-                        name=p.get("name", f"用户{i+1}"),
-                        age=p.get("age"),
-                        occupation=p.get("occupation", ""),
-                        city=p.get("city", ""),
-                        background=p.get("background", ""),
-                        persona_data=p,
-                        source="generated",
-                    )
-                    new_db.add(db_persona)
-                    await new_db.commit()
+        # ═══════════════════════════════════════════════════════
+        # Step 3: 社交媒体侦察（并行）
+        # ═══════════════════════════════════════════════════════
 
-                yield f"data: {json.dumps({'type': 'persona', 'index': i, 'persona': persona}, ensure_ascii=False)}\n\n"
+        # 从研究标题提取关键词
+        keywords = title.replace("...", "").split()[:3] or ["用户研究"]
 
-            async with AsyncSessionLocal() as new_db:
-                study_to_update = await new_db.get(Study, study_id)
-                if study_to_update:
-                    study_to_update.current_phase = "personas"
-                    await new_db.commit()
+        async def scout_persona(persona: dict):
+            """单个人设的社媒侦察"""
+            p_id = persona["id"]
+            p_name = persona.get("name", "用户")
+            p_desc = f"{p_name}，{persona.get('age', '')}岁，{persona.get('occupation', '')}，{persona.get('background', '')[:100]}"
 
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'personas', 'status': 'done', 'count': len(personas)}, ensure_ascii=False)}\n\n"
-
-            # ═══════════════════════════════════════════════════════
-            # Step 3: 社交媒体侦察
-            # ═══════════════════════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'scout', 'status': 'running', 'message': '正在进行社交媒体侦察...'}, ensure_ascii=False)}\n\n"
-
-            # 从研究标题提取关键词
-            keywords = title.replace("...", "").split()[:3] or ["用户研究"]
-
-            for persona in personas:
-                p_id = persona["id"]
-                p_name = persona.get("name", "用户")
-                p_desc = f"{p_name}，{persona.get('age', '')}岁，{persona.get('occupation', '')}，{persona.get('background', '')[:100]}"
-
-                # 生成专属关键词
-                kw_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
+            # 生成专属关键词
+            kw_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
 用户画像：{p_desc}
 研究主题：{title}
 JSON 输出：{{"keywords": ["关键词1 关键词2"]}}"""
 
-                try:
-                    kw_result = await _llm_complete([{"role": "user", "content": kw_prompt}], temperature=0.7, json_mode=True)
-                    kw_data = json.loads(kw_result)
-                    persona_kw = kw_data.get("keywords", keywords)
-                except Exception:
-                    persona_kw = keywords
+            try:
+                kw_result = await _llm_complete([{"role": "user", "content": kw_prompt}], temperature=0.7, json_mode=True)
+                kw_data = json.loads(kw_result)
+                persona_kw = kw_data.get("keywords", keywords)
+            except Exception:
+                persona_kw = keywords
 
-                yield f"data: {json.dumps({'type': 'scout_start', 'persona_id': p_id, 'persona_name': p_name, 'keywords': persona_kw}, ensure_ascii=False)}\n\n"
-
-                # 社媒内容搜索
-                scout_prompt = f"""你是一位擅长网络内容分析的研究员。
-请模拟从 {', '.join(request.platforms)} 平台上搜索关键词 "{', '.join(persona_kw)}" 的真实用户内容。
+            # 社媒内容搜索
+            scout_prompt = f"""你是一位擅长网络内容分析的研究员。
+请模拟从 {', '.join(platforms)} 平台上搜索关键词 "{', '.join(persona_kw)}" 的真实用户内容。
 目标用户画像：{p_desc}
 生成 5-8 条该类用户可能发布的真实帖子/评论。
 
@@ -1621,81 +1566,72 @@ JSON 格式输出：
   "insights": ["核心洞察1", "核心洞察2"]
 }}"""
 
-                try:
-                    scout_result = await _llm_complete([{"role": "user", "content": scout_prompt}], temperature=0.8, json_mode=True)
-                    scout_data = json.loads(scout_result)
-                    posts = scout_data.get("posts", [])
-                    insights = scout_data.get("insights", [])
-                except Exception as e:
-                    logger.error(f"社媒侦察失败: {e}")
-                    posts, insights = [], []
+            try:
+                scout_result = await _llm_complete([{"role": "user", "content": scout_prompt}], temperature=0.8, json_mode=True)
+                scout_data = json.loads(scout_result)
+                posts = scout_data.get("posts", [])
+                insights = scout_data.get("insights", [])
+            except Exception as e:
+                logger.error(f"社媒侦察失败: {e}")
+                posts, insights = [], []
 
-                # 发送帖子
-                for post in posts:
-                    yield f"data: {json.dumps({'type': 'post', 'persona_id': p_id, 'post': {**post, 'persona_name': p_name}}, ensure_ascii=False)}\n\n"
-
-                # 人设增强
-                if posts:
-                    rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
+            # 人设增强
+            if posts:
+                rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
 原始人设：{json.dumps(persona, ensure_ascii=False)}
 社媒声音：{json.dumps(posts, ensure_ascii=False)}
 洞察：{', '.join(insights)}
 任务：根据真实数据，更新这个人设的态度、痛点、语言风格，并添加 "scouted_updates" 字段说明修改原因。"""
 
-                    try:
-                        updated_result = await _llm_complete([{"role": "user", "content": rebuild_prompt}], temperature=0.6, json_mode=True)
-                        updated_persona = json.loads(updated_result)
-                        updated_persona["id"] = p_id
-                        updated_persona["source"] = "scouted"
+                try:
+                    updated_result = await _llm_complete([{"role": "user", "content": rebuild_prompt}], temperature=0.6, json_mode=True)
+                    updated_persona = json.loads(updated_result)
+                    updated_persona["id"] = p_id
+                    updated_persona["source"] = "scouted"
 
-                        async with AsyncSessionLocal() as new_db:
-                            persona_to_update = await new_db.get(StudyPersona, p_id)
-                            if persona_to_update:
-                                persona_to_update.persona_data = updated_persona
-                                persona_to_update.source = "scouted"
-                                await new_db.commit()
+                    async with AsyncSessionLocal() as db:
+                        persona_to_update = await db.get(StudyPersona, p_id)
+                        if persona_to_update:
+                            persona_to_update.persona_data = updated_persona
+                            persona_to_update.source = "scouted"
+                            await db.commit()
+                except Exception as e:
+                    logger.error(f"人设增强失败: {e}")
 
-                        yield f"data: {json.dumps({'type': 'updated_persona', 'persona_id': p_id, 'persona': updated_persona}, ensure_ascii=False)}\n\n"
-                    except Exception as e:
-                        logger.error(f"人设增强失败: {e}")
+            return {"persona_id": p_id, "posts_count": len(posts)}
 
-                yield f"data: {json.dumps({'type': 'scout_done', 'persona_id': p_id, 'persona_name': p_name, 'posts_count': len(posts)}, ensure_ascii=False)}\n\n"
+        # 并行执行社媒侦察
+        await asyncio.gather(*[scout_persona(p) for p in personas])
+        logger.info(f"[自动研究] 社媒侦察完成，共 {len(personas)} 个人设")
 
-            async with AsyncSessionLocal() as new_db:
-                study_to_update = await new_db.get(Study, study_id)
-                if study_to_update:
-                    study_to_update.current_phase = "scouting"
-                    await new_db.commit()
+        async with AsyncSessionLocal() as db:
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.current_phase = "scouting"
+                await db.commit()
 
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'scout', 'status': 'done'}, ensure_ascii=False)}\n\n"
+        # ═══════════════════════════════════════════════════════
+        # Step 4: 自动深度访谈（并行）
+        # ═══════════════════════════════════════════════════════
 
-            # ═══════════════════════════════════════════════════════
-            # Step 4: 自动深度访谈
-            # ═══════════════════════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'interview', 'status': 'running', 'message': '正在进行自动深度访谈...'}, ensure_ascii=False)}\n\n"
+        # 提取访谈问题
+        questions = await _extract_interview_questions(design_content)
+        if not questions:
+            questions = [
+                "你能简单介绍一下自己和你目前的生活状态吗？",
+                f"关于{title}，你目前的了解和看法是什么？",
+                "在做出相关决策时，你最看重哪些因素？",
+                "你之前有没有类似的经历？可以分享一下吗？",
+                "什么情况下你会决定尝试或购买？什么会让你犹豫？",
+            ]
 
-            # 提取访谈问题
-            questions = await _extract_interview_questions(design_content)
-            if not questions:
-                questions = [
-                    "你能简单介绍一下自己和你目前的生活状态吗？",
-                    f"关于{title}，你目前的了解和看法是什么？",
-                    "在做出相关决策时，你最看重哪些因素？",
-                    "你之前有没有类似的经历？可以分享一下吗？",
-                    "什么情况下你会决定尝试或购买？什么会让你犹豫？",
-                ]
+        async def interview_persona(persona: dict):
+            """单个人设的深度访谈"""
+            p_id = persona["id"]
+            p_name = persona.get("name", "用户")
 
-            yield f"data: {json.dumps({'type': 'interview_questions', 'questions': questions, 'count': len(questions)}, ensure_ascii=False)}\n\n"
-
-            interview_transcripts = []
-            for idx, persona in enumerate(personas):
-                p_id = persona["id"]
-                p_name = persona.get("name", "用户")
-
-                yield f"data: {json.dumps({'type': 'interview_start', 'persona_id': p_id, 'persona_name': p_name, 'index': idx}, ensure_ascii=False)}\n\n"
-
-                # 执行访谈
-                system_prompt = f"""你正在扮演 {p_name}（{persona.get('age', '')}岁，{persona.get('occupation', '')}）参与深度访谈。
+            # 执行访谈
+            system_prompt = f"""你正在扮演 {p_name}（{persona.get('age', '')}岁，{persona.get('occupation', '')}）参与深度访谈。
 背景：{persona.get('background', '')}
 人设详情：{json.dumps(persona, ensure_ascii=False)}
 要求：
@@ -1703,61 +1639,58 @@ JSON 格式输出：
 - 体现角色的真实性格、矛盾感、生活经历
 - 每个问题回答 2-4 句话，有具体细节"""
 
-                messages = [{"role": "system", "content": system_prompt}]
-                qa_records = []
+            messages = [{"role": "system", "content": system_prompt}]
+            qa_records = []
 
-                for question in questions:
-                    messages.append({"role": "user", "content": question})
-                    try:
-                        answer = await _llm_complete(messages, temperature=0.75)
-                    except Exception as e:
-                        answer = f"（回答失败：{str(e)}）"
+            for question in questions:
+                messages.append({"role": "user", "content": question})
+                try:
+                    answer = await _llm_complete(messages, temperature=0.75)
+                except Exception as e:
+                    answer = f"（回答失败：{str(e)}）"
 
-                    messages.append({"role": "assistant", "content": answer})
-                    qa_records.append({"question": question, "answer": answer})
+                messages.append({"role": "assistant", "content": answer})
+                qa_records.append({"question": question, "answer": answer})
 
-                    yield f"data: {json.dumps({'type': 'qa', 'persona_id': p_id, 'question': question, 'answer': answer}, ensure_ascii=False)}\n\n"
+            # 保存访谈记录
+            async with AsyncSessionLocal() as db:
+                interview = StudyInterview(
+                    study_id=study_id,
+                    persona_id=p_id,
+                    persona_name=p_name,
+                    messages=[
+                        msg
+                        for qa in qa_records
+                        for msg in [
+                            {"role": "user", "content": qa["question"]},
+                            {"role": "assistant", "content": qa["answer"]},
+                        ]
+                    ],
+                )
+                db.add(interview)
+                await db.commit()
 
-                # 保存访谈记录
-                async with AsyncSessionLocal() as new_db:
-                    interview = StudyInterview(
-                        study_id=study_id,
-                        persona_id=p_id,
-                        persona_name=p_name,
-                        messages=[
-                            msg
-                            for qa in qa_records
-                            for msg in [
-                                {"role": "user", "content": qa["question"]},
-                                {"role": "assistant", "content": qa["answer"]},
-                            ]
-                        ],
-                    )
-                    new_db.add(interview)
-                    await new_db.commit()
+            return {
+                "persona_id": p_id,
+                "persona_name": p_name,
+                "messages": messages[1:],  # 去掉 system
+            }
 
-                interview_transcripts.append({
-                    "persona_id": p_id,
-                    "persona_name": p_name,
-                    "messages": messages[1:],  # 去掉 system
-                })
+        # 并行执行访谈
+        interview_transcripts = await asyncio.gather(*[interview_persona(p) for p in personas])
+        logger.info(f"[自动研究] 深度访谈完成，共 {len(personas)} 个人设")
 
-                yield f"data: {json.dumps({'type': 'interview_done', 'persona_id': p_id, 'persona_name': p_name, 'qa_count': len(qa_records)}, ensure_ascii=False)}\n\n"
+        async with AsyncSessionLocal() as db:
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.current_phase = "interviewing"
+                await db.commit()
 
-            async with AsyncSessionLocal() as new_db:
-                study_to_update = await new_db.get(Study, study_id)
-                if study_to_update:
-                    study_to_update.current_phase = "interviewing"
-                    await new_db.commit()
+        # ═══════════════════════════════════════════════════════
+        # Step 5: 生成研究报告
+        # ═══════════════════════════════════════════════════════
 
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'interview', 'status': 'done'}, ensure_ascii=False)}\n\n"
-
-            # ═══════════════════════════════════════════════════════
-            # Step 5: 生成研究报告
-            # ═══════════════════════════════════════════════════════
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'report', 'status': 'running', 'message': '正在生成研究报告...'}, ensure_ascii=False)}\n\n"
-
-            report_system = """你是一位资深市场研究专家，擅长将定性研究数据转化为可指导商业决策的专业报告。
+        report_system = """你是一位资深市场研究专家，擅长将定性研究数据转化为可指导商业决策的专业报告。
 
 报告结构：
 ## 一、执行摘要（200字）
@@ -1774,16 +1707,16 @@ JSON 格式输出：
 - 建议要具体可行，有优先级
 - 使用 Markdown 格式"""
 
-            # 构建访谈摘要
-            interview_summary = ""
-            for t in interview_transcripts:
-                interview_summary += f"\n### {t['persona_name']} 的访谈\n"
-                msgs = t["messages"]
-                for i in range(0, len(msgs)-1, 2):
-                    if msgs[i]["role"] == "user" and msgs[i+1]["role"] == "assistant":
-                        interview_summary += f"**问：** {msgs[i]['content']}\n**答：** {msgs[i+1]['content']}\n\n"
+        # 构建访谈摘要
+        interview_summary = ""
+        for t in interview_transcripts:
+            interview_summary += f"\n### {t['persona_name']} 的访谈\n"
+            msgs = t["messages"]
+            for i in range(0, len(msgs)-1, 2):
+                if msgs[i]["role"] == "user" and msgs[i+1]["role"] == "assistant":
+                    interview_summary += f"**问：** {msgs[i]['content']}\n**答：** {msgs[i+1]['content']}\n\n"
 
-            report_user = f"""研究背景：{request.user_request}
+        report_user = f"""研究背景：{user_request}
 
 研究设计：{design_content}
 
@@ -1793,60 +1726,205 @@ JSON 格式输出：
 
 请生成完整的市场调研报告（Markdown 格式，2500-3500 字）。"""
 
-            full_report = ""
-            async for chunk in _llm_stream([
-                {"role": "system", "content": report_system},
-                {"role": "user", "content": report_user},
-            ], temperature=0.6):
-                full_report += chunk
-                yield f"data: {json.dumps({'type': 'report_content', 'delta': chunk}, ensure_ascii=False)}\n\n"
+        full_report = ""
+        async for chunk in _llm_stream([
+            {"role": "system", "content": report_system},
+            {"role": "user", "content": report_user},
+        ], temperature=0.6):
+            full_report += chunk
 
-            # 保存报告
-            async with AsyncSessionLocal() as new_db:
-                report = StudyReport(
-                    study_id=study_id,
-                    content=full_report,
-                    format="markdown",
-                )
-                new_db.add(report)
-                study_to_update = await new_db.get(Study, study_id)
-                if study_to_update:
-                    study_to_update.status = "completed"
-                    study_to_update.current_phase = "completed"
-                await new_db.commit()
+        # 保存报告
+        async with AsyncSessionLocal() as db:
+            report = StudyReport(
+                study_id=study_id,
+                content=full_report,
+                format="markdown",
+            )
+            db.add(report)
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.status = "completed"
+                study_to_update.current_phase = "completed"
+            await db.commit()
 
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'report', 'status': 'done'}, ensure_ascii=False)}\n\n"
+        task_completed = True
+        logger.info(f"[自动研究] 任务完成，study_id={study_id}")
 
-            # ═══════════════════════════════════════════════════════
-            # 完成
-            # ═══════════════════════════════════════════════════════
-            task_completed = True
-            yield f"data: {json.dumps({'type': 'step', 'step': 'auto_research', 'status': 'done', 'study_id': study_id, 'report_length': len(full_report)}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+    except asyncio.CancelledError:
+        logger.warning(f"[自动研究] 任务被取消，study_id={study_id}")
+        raise
+    except Exception as e:
+        logger.error(f"[自动研究] 任务失败: {e}")
+        async with AsyncSessionLocal() as db:
+            study_to_update = await db.get(Study, study_id)
+            if study_to_update:
+                study_to_update.status = "failed"
+                study_to_update.error_message = str(e)
+                await db.commit()
+        raise
+    finally:
+        # 如果任务未完成，返还积分
+        if not task_completed and has_deducted_credits:
+            async with AsyncSessionLocal() as db:
+                user_to_refund = await db.get(User, user_id)
+                if user_to_refund:
+                    user_to_refund.credits += TASK_COST_CREDITS
+                    await db.commit()
+                    logger.info(f"[积分] 自动研究未完成，返还 {TASK_COST_CREDITS} 积分给用户 {user_to_refund.email}")
 
-        except asyncio.CancelledError:
-            logger.warning(f"[自动研究] 流式响应被取消，用户 {user_id}")
-            raise
-        except Exception as e:
-            logger.error(f"[自动研究] 研究失败: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            raise
-        finally:
-            # 如果任务未完成，返还积分
-            if not task_completed and has_deducted_credits:
-                async with AsyncSessionLocal() as new_db:
-                    user_to_refund = await new_db.get(User, user_id)
-                    if user_to_refund:
-                        user_to_refund.credits += TASK_COST_CREDITS
-                        await new_db.commit()
-                        logger.info(f"[积分] 自动研究未完成，返还 {TASK_COST_CREDITS} 积分给用户 {user_to_refund.email}")
-                        try:
-                            yield f"data: {json.dumps({'type': 'credits_refund', 'amount': TASK_COST_CREDITS, 'message': '任务中断，积分已返还'}, ensure_ascii=False)}\n\n"
-                        except:
-                            pass
+        # 清理任务记录
+        if study_id in _active_tasks:
+            del _active_tasks[study_id]
 
-    return StreamingResponse(
-        stream_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+@router.post("/auto-research/submit")
+async def submit_auto_research(
+    request: AutoResearchRequest,
+    current_user: User = Depends(get_user_by_api_key),
+):
+    """
+    提交全自动市场研究任务（异步模式）
+
+    返回 task_id，可通过 GET /auto-research/status/{task_id} 查询进度和结果
+    """
+    from app.core.database import AsyncSessionLocal
+
+    # 检查积分（超级管理员不需要检查）
+    if not current_user.is_superuser:
+        if current_user.credits < TASK_COST_CREDITS:
+            raise HTTPException(
+                status_code=402,
+                detail=f"积分不足，当前积分 {current_user.credits}，需要 {TASK_COST_CREDITS} 积分"
+            )
+
+    # 创建 Study 记录并立即扣除积分
+    title = request.user_request[:30] + ("..." if len(request.user_request) > 30 else "")
+    has_deducted = False
+
+    async with AsyncSessionLocal() as db:
+        study = Study(
+            user_id=current_user.id,
+            title=title,
+            user_request=request.user_request,
+            status="in_progress",
+            current_phase="designing",
+            source="api",  # 标记为 API 调用创建
+        )
+        db.add(study)
+
+        # 立即扣除积分（非超级管理员）
+        if not current_user.is_superuser:
+            user_to_deduct = await db.get(User, current_user.id)
+            if user_to_deduct:
+                user_to_deduct.credits -= TASK_COST_CREDITS
+                has_deducted = True
+                logger.info(f"[积分] 提交任务扣除 {TASK_COST_CREDITS} 积分，用户 {user_to_deduct.email}，剩余 {user_to_deduct.credits}")
+
+        await db.commit()
+        await db.refresh(study)
+        study_id = study.id
+
+    # 创建后台任务
+    task = asyncio.create_task(
+        _run_auto_research(
+            study_id=study_id,
+            user_id=current_user.id,
+            user_request=request.user_request,
+            persona_count=request.persona_count,
+            platforms=request.platforms,
+            title=title,
+            has_deducted_credits=has_deducted,
+        )
     )
+    _active_tasks[study_id] = task
+
+    return ApiResponse.ok({
+        "task_id": study_id,
+        "status": "pending",
+        "message": "任务已提交，请通过 GET /auto-research/status/{task_id} 查询进度"
+    })
+
+
+@router.get("/auto-research/test")
+async def test_api(
+    current_user: User = Depends(get_user_by_api_key),
+):
+    """
+    测试 API 连接和认证
+
+    验证 API Key 是否有效，返回用户信息
+    """
+    return ApiResponse.ok({
+        "status": "ok",
+        "message": "API 连接正常",
+        "user": {
+            "id": current_user.id,
+            "name": current_user.name,
+            "email": current_user.email,
+            "credits": current_user.credits,
+            "is_superuser": current_user.is_superuser,
+        },
+        "credits_required": TASK_COST_CREDITS,
+        "can_research": current_user.is_superuser or current_user.credits >= TASK_COST_CREDITS,
+    })
+
+
+@router.get("/auto-research/status/{task_id}")
+async def get_auto_research_status(
+    task_id: str,
+    current_user: User = Depends(get_user_by_api_key),
+):
+    """
+    查询全自动研究任务状态和结果
+
+    返回：
+    - status: pending | in_progress | completed | failed
+    - report: 研究报告内容（仅在 completed 时返回）
+    """
+    from app.core.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        study = await db.get(Study, task_id)
+        if not study:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        # 验证所有权
+        if study.user_id != current_user.id and not current_user.is_superuser:
+            raise HTTPException(status_code=403, detail="无权访问此任务")
+
+        # 检查任务是否还在执行中
+        is_running = task_id in _active_tasks and not _active_tasks[task_id].done()
+
+        if study.status == "completed":
+            # 获取报告内容
+            from sqlalchemy import select
+            result = await db.execute(
+                select(StudyReport).where(StudyReport.study_id == task_id)
+            )
+            report = result.scalar_one_or_none()
+
+            return ApiResponse.ok({
+                "task_id": task_id,
+                "status": "completed",
+                "title": study.title,
+                "report": report.content if report else None,
+            })
+        elif study.status == "failed":
+            return ApiResponse.ok({
+                "task_id": task_id,
+                "status": "failed",
+                "error": study.error_message or "任务执行失败",
+            })
+        elif is_running:
+            return ApiResponse.ok({
+                "task_id": task_id,
+                "status": "in_progress",
+                "current_phase": study.current_phase,
+                "message": "任务正在执行中...",
+            })
+        else:
+            return ApiResponse.ok({
+                "task_id": task_id,
+                "status": "pending",
+                "message": "任务等待执行...",
+            })

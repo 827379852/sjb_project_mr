@@ -23,8 +23,12 @@ class Study(Base):
     design_content: Mapped[str] = mapped_column(Text, default="")  # LLM 生成的设计框架
 
     # 状态
-    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_progress | completed | archived
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_progress | completed | failed | archived
     current_phase: Mapped[str] = mapped_column(String(20), default="idle")
+    error_message: Mapped[str] = mapped_column(Text, default="")  # 错误信息（失败时记录）
+
+    # 来源
+    source: Mapped[str] = mapped_column(String(20), default="web")  # web | api
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

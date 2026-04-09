@@ -1,9 +1,46 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores'
 
 const router = useRouter()
 const authStore = useAuthStore()
+
+// API 基础 URL
+const API_BASE = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+  ? 'http://localhost:8000/api/v1'
+  : `${window.location.origin}/api/v1`
+
+// 刷新用户信息（包括积分）
+async function refreshUserInfo() {
+  if (!authStore.isAuthenticated) return
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: {
+        'Authorization': `Bearer ${authStore.token}`
+      }
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      if (data.code === 0 && data.data) {
+        authStore.setUser(data.data)
+      }
+    } else if (res.status === 401) {
+      // Token 过期，退出登录
+      authStore.logout()
+      router.push('/login')
+    }
+  } catch (err) {
+    console.error('刷新用户信息失败:', err)
+  }
+}
+
+// 页面加载时刷新用户信息
+onMounted(() => {
+  refreshUserInfo()
+})
 
 function handleLogout() {
   authStore.logout()
@@ -13,17 +50,8 @@ function handleLogout() {
 
 <template>
   <div class="app-container">
-    <!-- 用户信息栏（仅登录后显示） -->
-    <div v-if="authStore.isAuthenticated && $route.meta.requiresAuth" class="user-bar">
-      <div class="user-info">
-        <span class="user-avatar">👤</span>
-        <span class="user-name">{{ authStore.user?.name || '用户' }}</span>
-      </div>
-      <button class="logout-btn" @click="handleLogout">退出登录</button>
-    </div>
-
     <!-- 路由视图 -->
-    <router-view />
+    <router-view @user-updated="refreshUserInfo" />
   </div>
 </template>
 
@@ -32,50 +60,5 @@ function handleLogout() {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-}
-
-.user-bar {
-  position: fixed;
-  top: 0;
-  right: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: rgba(255, 255, 255, 0.95);
-  border-bottom-left-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.user-avatar {
-  font-size: 18px;
-}
-
-.user-name {
-  font-size: 14px;
-  color: #333;
-}
-
-.logout-btn {
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #666;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.logout-btn:hover {
-  background: #f5f5f5;
-  border-color: #ccc;
 }
 </style>
