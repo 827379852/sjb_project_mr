@@ -27,6 +27,7 @@ class UserOut(BaseModel):
     is_active: bool
     is_superuser: bool = False
     credits: int = 0
+    api_key: str = ""
     created_at: datetime
 
     model_config = {"from_attributes": True}

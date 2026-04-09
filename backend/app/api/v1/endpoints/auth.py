@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.response import ApiResponse
 from app.core.security import verify_password, get_password_hash, create_access_token
-from app.models.user import User
+from app.models.user import User, generate_api_key
 from app.schemas.user import UserCreate, UserLogin, UserOut, Token
 from app.dependencies.auth import get_current_active_user
 
@@ -79,9 +79,37 @@ async def login(
 
 @router.get("/me", response_model=ApiResponse[UserOut])
 async def get_me(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
     """
     获取当前用户信息
     """
+    # 如果用户没有 api_key，自动生成一个
+    if not current_user.api_key:
+        current_user.api_key = generate_api_key()
+        await db.commit()
+        await db.refresh(current_user)
+
     return ApiResponse.ok(UserOut.model_validate(current_user))
+
+
+@router.post("/reset-api-key", response_model=ApiResponse[dict])
+async def reset_api_key(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    重置 API Key
+
+    警告：重置后旧的 API Key 将立即失效
+    """
+    new_api_key = generate_api_key()
+    current_user.api_key = new_api_key
+    await db.commit()
+    await db.refresh(current_user)
+
+    return ApiResponse.ok({
+        "api_key": new_api_key,
+        "message": "API Key 已重置，旧 Key 已失效"
+    })

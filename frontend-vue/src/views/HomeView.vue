@@ -649,6 +649,10 @@ async function triggerPersonas() {
             scrollToBottom()
           } else if (event.type === 'step' && event.status === 'done') {
             updateStepCardStatus('done')
+          } else if (event.type === 'credits_deducted') {
+            // 积分扣除，更新前端显示
+            authStore.updateCredits((event as any).remaining)
+            console.log('积分已扣除:', event.amount, '剩余:', (event as any).remaining)
           } else if (event.type === 'credits_refund') {
             // 积分返还
             authStore.addCredits(event.amount as number)

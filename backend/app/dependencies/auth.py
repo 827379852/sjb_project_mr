@@ -2,7 +2,7 @@
 认证依赖 - 获取当前用户
 """
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,40 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+async def get_user_by_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    通过 API Key 获取用户（用于外部 API 调用）
+
+    Raises:
+        HTTPException: 未提供 API Key 或 API Key 无效
+    """
+    if x_api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未提供 API Key，请在请求头中添加 X-API-Key",
+        )
+
+    result = await db.execute(select(User).where(User.api_key == x_api_key))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的 API Key",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="用户已被禁用",
         )
 
     return user

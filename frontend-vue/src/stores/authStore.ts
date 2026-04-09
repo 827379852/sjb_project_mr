@@ -8,6 +8,7 @@ export interface User {
   is_active: boolean
   is_superuser: boolean
   credits: number
+  api_key: string
   created_at: string
 }
 

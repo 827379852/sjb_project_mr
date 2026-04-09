@@ -2,6 +2,7 @@
 用户模型
 """
 import uuid
+import secrets
 from datetime import datetime
 from sqlalchemy import String, Boolean, DateTime, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,6 +13,11 @@ from app.core.database import Base
 DEFAULT_CREDITS = 100
 # 每次任务消耗的积分
 TASK_COST_CREDITS = 10
+
+
+def generate_api_key() -> str:
+    """生成安全的 API Key，格式: mr_live_xxxxx"""
+    return f"mr_live_{secrets.token_urlsafe(32)}"
 
 
 class User(Base):
@@ -25,5 +31,6 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     credits: Mapped[int] = mapped_column(Integer, default=DEFAULT_CREDITS)
+    api_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True, default=generate_api_key)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
