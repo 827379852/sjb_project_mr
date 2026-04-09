@@ -202,37 +202,77 @@ function restoreMessagesFromStore() {
     uiStore.expandStep(scoutId)
   }
 
-  // 恢复访谈记录 - 不显示后续引导按钮
+  // 恢复访谈记录 - 使用与新建任务相同的格式
   const history = researchStore.interviewHistory
-  Object.entries(history).forEach(([personaId, msgs]) => {
-    const persona = researchStore.personas.find(p => p.id === personaId)
-    const personaName = persona?.name || '受访者'
+  const personaEntries = Object.entries(history)
 
-    // 添加访谈卡片
-    let interviewContent = ''
-    msgs.forEach(msg => {
-      if (msg.role === 'user') {
-        interviewContent += `**问：** ${msg.content}\n\n`
-      } else {
-        interviewContent += `**${personaName}：** ${msg.content}\n\n`
+  if (personaEntries.length > 0) {
+    const interviewId = 'interview-restored'
+    const emojis = ['👩', '👨', '🧑', '👩‍💼', '👨‍💻']
+
+    let interviewContent = '<div class="interview-results">'
+
+    personaEntries.forEach(([personaId, msgs], index) => {
+      const persona = researchStore.personas.find(p => p.id === personaId)
+      const personaName = persona?.name || '受访者'
+      const emoji = emojis[index % 5]
+
+      // 构建 QA 列表
+      const qaList: { question: string; answer: string }[] = []
+      for (let i = 0; i < msgs.length - 1; i += 2) {
+        if (msgs[i].role === 'user' && msgs[i + 1]?.role === 'assistant') {
+          qaList.push({
+            question: msgs[i].content,
+            answer: msgs[i + 1].content
+          })
+        }
       }
+
+      interviewContent += `
+        <div class="interview-persona-block">
+          <div class="interview-header">
+            <div class="interview-persona-avatar">${emoji}</div>
+            <div>
+              <div class="interview-persona-name">${escapeHtml(personaName)}</div>
+              <div class="interview-persona-meta">${qaList.length} 轮问答完成 ✓</div>
+            </div>
+            <div class="interview-emotion">✅ 完成</div>
+          </div>
+          <div class="interview-messages" style="max-height:400px;overflow-y:auto">
+            ${qaList.map(qa => `
+              <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+                <div class="interview-msg-q" style="margin-bottom:4px">${escapeHtml(qa.question)}</div>
+                <div class="interview-msg-a">${escapeHtml(qa.answer)}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `
+    })
+
+    interviewContent += '</div>'
+
+    // 计算总消息数
+    let totalMsgs = 0
+    personaEntries.forEach(([, msgs]) => {
+      totalMsgs += msgs.length
     })
 
     messages.value.push({
-      id: `interview-${personaId}`,
+      id: interviewId,
       type: 'stepCard',
       content: '',
       stepData: {
-        id: personaId,
-        title: `💬 与 ${personaName} 的访谈`,
-        desc: `${msgs.length} 条消息`,
+        id: interviewId,
+        title: '🎤 自动深度访谈',
+        desc: `已完成 ${personaEntries.length} 位用户的访谈`,
         status: 'done',
         content: interviewContent,
         footer: ''
       }
     })
-    uiStore.expandStep(personaId)
-  })
+    uiStore.expandStep(interviewId)
+  }
 
   // 恢复报告 - 显示导出按钮
   if (researchStore.reportContent) {
@@ -572,6 +612,14 @@ async function triggerPersonas() {
     })
 
     if (!res.ok) {
+      if (res.status === 402) {
+        // 积分不足
+        const errorData = await res.json()
+        updateStepCardStatus('error')
+        updateStepCardContent(`❌ ${errorData.detail || '积分不足，无法开始市场调研'}`)
+        researchStore.setStreaming(false)
+        return
+      }
       updateStepCardStatus('error')
       researchStore.setStreaming(false)
       return
@@ -601,6 +649,13 @@ async function triggerPersonas() {
             scrollToBottom()
           } else if (event.type === 'step' && event.status === 'done') {
             updateStepCardStatus('done')
+          } else if (event.type === 'credits_refund') {
+            // 积分返还
+            authStore.addCredits(event.amount as number)
+            console.log('积分已返还:', event.amount)
+          } else if (event.type === 'error') {
+            updateStepCardStatus('error')
+            updateStepCardContent(`❌ ${(event as any).message || '发生错误'}`)
           }
         } catch {
           buffer = eventStr

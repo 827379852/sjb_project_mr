@@ -193,17 +193,6 @@ async def design_study(
 
     返回：Server-Sent Events 流式响应
     """
-    # 检查积分（超级管理员不需要检查）
-    if not current_user.is_superuser:
-        if current_user.credits < TASK_COST_CREDITS:
-            raise HTTPException(
-                status_code=402,
-                detail=f"积分不足，当前积分 {current_user.credits}，需要 {TASK_COST_CREDITS} 积分"
-            )
-        # 扣除积分
-        current_user.credits -= TASK_COST_CREDITS
-        await db.flush()
-
     # 创建 Study 记录
     title = request.user_request[:30] + ("..." if len(request.user_request) > 30 else "")
     study = Study(
@@ -218,7 +207,6 @@ async def design_study(
     await db.refresh(study)
 
     study_id = study.id
-    user_id = current_user.id
 
     system_prompt = """你是一位资深的定性用户研究员，擅长设计用户访谈框架。
 你的任务是分析用户的研究需求，帮助他们：
@@ -269,13 +257,6 @@ async def design_study(
                     study_to_update.design_content = full_content
                     study_to_update.current_phase = "post-design"
                     await new_db.commit()
-            else:
-                # 失败时返还积分（非超级管理员）
-                user_to_refund = await new_db.get(User, user_id)
-                if user_to_refund and not user_to_refund.is_superuser:
-                    user_to_refund.credits += TASK_COST_CREDITS
-                    await new_db.commit()
-                    yield f"data: {json.dumps({'type': 'credits_refund', 'amount': TASK_COST_CREDITS, 'message': '任务失败，积分已返还'}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'step', 'step': 'design_study', 'status': 'done', 'study_id': study_id}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
@@ -309,7 +290,22 @@ async def search_personas(
     if not study or study.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="研究不存在")
 
+    # 检查积分（超级管理员不需要检查）
+    if not current_user.is_superuser:
+        if current_user.credits < TASK_COST_CREDITS:
+            raise HTTPException(
+                status_code=402,
+                detail=f"积分不足，当前积分 {current_user.credits}，需要 {TASK_COST_CREDITS} 积分"
+            )
+        # 扣除积分
+        current_user.credits -= TASK_COST_CREDITS
+        await db.flush()
+
+    user_id = current_user.id
+    has_deducted_credits = not current_user.is_superuser  # 标记是否扣除了积分
+
     async def stream_generator():
+        has_error = False
         yield f"data: {json.dumps({'type': 'step', 'step': 'search_personas', 'status': 'running', 'max_count': request.max_count}, ensure_ascii=False)}\n\n"
 
         design_context = study.design_content or ""
@@ -351,11 +347,30 @@ async def search_personas(
   ]
 }}"""
 
-        result_json = await _llm_complete(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            temperature=0.85,
-            json_mode=True,
-        )
+        try:
+            result_json = await _llm_complete(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                temperature=0.85,
+                json_mode=True,
+            )
+        except Exception as e:
+            has_error = True
+            logger.error(f"人设生成失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+        # 失败时返还积分
+        if has_error:
+            from app.core.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as new_db:
+                if has_deducted_credits:
+                    user_to_refund = await new_db.get(User, user_id)
+                    if user_to_refund:
+                        user_to_refund.credits += TASK_COST_CREDITS
+                        await new_db.commit()
+                        yield f"data: {json.dumps({'type': 'credits_refund', 'amount': TASK_COST_CREDITS, 'message': '任务失败，积分已返还'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'step', 'step': 'search_personas', 'status': 'error'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         try:
             personas_data = json.loads(result_json).get("personas", [])

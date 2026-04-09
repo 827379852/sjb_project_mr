@@ -32,6 +32,7 @@ export const useAuthStore = defineStore('auth', () => {
   // Computed
   const isAuthenticated = computed(() => !!token.value)
   const isSuperuser = computed(() => user.value?.is_superuser ?? false)
+  const credits = computed(() => user.value?.credits ?? 0)
 
   // Actions
   function setToken(newToken: string | null) {
@@ -57,6 +58,27 @@ export const useAuthStore = defineStore('auth', () => {
     setUser(null)
   }
 
+  function updateCredits(newCredits: number) {
+    if (user.value) {
+      user.value.credits = newCredits
+      localStorage.setItem(USER_KEY, JSON.stringify(user.value))
+    }
+  }
+
+  function addCredits(amount: number) {
+    if (user.value) {
+      user.value.credits += amount
+      localStorage.setItem(USER_KEY, JSON.stringify(user.value))
+    }
+  }
+
+  function deductCredits(amount: number) {
+    if (user.value) {
+      user.value.credits -= amount
+      localStorage.setItem(USER_KEY, JSON.stringify(user.value))
+    }
+  }
+
   return {
     // State
     token,
@@ -64,9 +86,13 @@ export const useAuthStore = defineStore('auth', () => {
     // Computed
     isAuthenticated,
     isSuperuser,
+    credits,
     // Actions
     setToken,
     setUser,
-    logout
+    logout,
+    updateCredits,
+    addCredits,
+    deductCredits
   }
 })
