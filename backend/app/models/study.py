@@ -63,6 +63,7 @@ class StudyPersona(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     study: Mapped["Study"] = relationship(back_populates="personas")
+    scout_results: Mapped[List["ScoutResult"]] = relationship(back_populates="persona", cascade="all, delete-orphan")
 
 
 class StudyInterview(Base):
@@ -87,15 +88,17 @@ class ScoutResult(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     study_id: Mapped[str] = mapped_column(String(36), ForeignKey("studies.id"), nullable=False, index=True)
+    persona_id: Mapped[str] = mapped_column(String(36), ForeignKey("study_personas.id"), nullable=True, index=True)
 
     keywords: Mapped[List] = mapped_column(JSON, default=list)
     platforms: Mapped[List] = mapped_column(JSON, default=list)
-    posts: Mapped[List] = mapped_column(JSON, default=list)  # [{platform, content, sentiment, ...}]
+    posts: Mapped[List] = mapped_column(JSON, default=list)  # [{platform, title, content, author, link, comments, ...}]
     insights: Mapped[List] = mapped_column(JSON, default=list)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     study: Mapped["Study"] = relationship(back_populates="scout_results")
+    persona: Mapped["StudyPersona"] = relationship(back_populates="scout_results")
 
 
 class StudyReport(Base):

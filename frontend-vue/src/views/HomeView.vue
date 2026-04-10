@@ -735,14 +735,46 @@ async function triggerScout() {
   function addPostToBlock(block: HTMLElement, post: any) {
     const div = document.createElement('div')
     div.className = 'post-item'
+    const isReal = post.is_real === true || post.is_real === 'true'
     const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
-    div.innerHTML = `
-      <div class="post-header">
-        <span class="post-platform ${post.platform}">${post.platform}</span>
-        <span class="post-sentiment">${sentimentEmoji}</span>
-      </div>
-      <div class="post-content">${escapeHtml(post.content || '')}</div>
-    `
+    const platformColor = post.platform === '小红书' ? 'color:#FF2442' : post.platform === '微博' ? 'color:#FF9744' : 'color:#00BFFF'
+
+    // 真实帖子展示：标题 + 正文 + 评论
+    if (isReal && post.title) {
+      const comments = post.comments || []
+      const commentsHtml = comments.length > 0 ? `
+        <div class="post-comments" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">💬 评论（${comments.length} 条）</div>
+          ${comments.slice(0, 5).map((c: any) => `
+            <div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-secondary)">
+              <span style="color:var(--text)">${escapeHtml(c.user || '用户')}:</span> ${escapeHtml(c.text || '').substring(0, 100)}
+            </div>
+          `).join('')}
+          ${comments.length > 5 ? `<div style="font-size:11px;color:var(--text-dim);padding-top:4px">还有 ${comments.length - 5} 条评论...</div>` : ''}
+        </div>
+      ` : ''
+
+      div.innerHTML = `
+        <div class="post-header">
+          <span class="post-platform" style="${platformColor}">📕 ${post.platform || '小红书'}</span>
+          <span class="post-source" style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实数据</span>
+          ${post.link ? `<a href="${escapeHtml(post.link)}" target="_blank" style="font-size:10px;color:var(--accent);text-decoration:none;margin-left:8px">🔗 查看原文</a>` : ''}
+        </div>
+        ${post.title ? `<div class="post-title" style="font-weight:600;margin:6px 0;font-size:13px;color:var(--text)">${escapeHtml(post.title)}</div>` : ''}
+        <div class="post-content" style="font-size:12px;line-height:1.6;margin:4px 0">${escapeHtml(post.content || '')}</div>
+        ${post.author ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">👤 ${escapeHtml(post.author)}</div>` : ''}
+        ${commentsHtml}
+      `
+    } else {
+      // 模拟数据展示
+      div.innerHTML = `
+        <div class="post-header">
+          <span class="post-platform" style="${platformColor}">${post.platform || '小红书'}</span>
+          <span class="post-sentiment">${sentimentEmoji}</span>
+        </div>
+        <div class="post-content">${escapeHtml(post.content || '')}</div>
+      `
+    }
     block.appendChild(div)
   }
 
@@ -819,6 +851,11 @@ async function triggerScout() {
             currentPersonaBlock = buildPersonaBlock(currentPersonaId, pName)
             postsContainer.appendChild(currentPersonaBlock)
             scrollToBottom()
+          } else if (event.type === 'scout_progress') {
+            // 侦察进度消息
+            const msg = (event as any).message || ''
+            const pId = (event as any).persona_id || currentPersonaId
+            updateProgress(`<span style="color:var(--accent)">${msg}</span>`)
           } else if (event.type === 'post') {
             const post = (event as any).post
             const personaId = (event as any).persona_id
@@ -864,11 +901,11 @@ async function triggerScout() {
           } else if (event.type === 'persona_scout_done') {
             const pName = (event as any).persona_name
             const pId = (event as any).persona_id
-            const count = personaScoutData[pId]?.posts.length || 0
+            const postsCount = (event as any).posts_count || 0
             if (personaScoutData[pId]) {
               personaScoutData[pId].done = true
             }
-            updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成（${count} 条帖子）`)
+            updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成（${postsCount} 篇小红书帖子）`)
           } else if (event.type === 'step' && event.step === 'build_persona' && event.status === 'done') {
             // 记录完成状态，暂不更新 DOM（等 SSE 结束后统一处理）
             // 通过 flag 标记，等 SSE 结束后设置 stepCard 状态

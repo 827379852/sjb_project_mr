@@ -26,12 +26,35 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.response import ApiResponse
+from app.core.xiaohongshu import search_xiaohongshu
 from app.models.user import User, TASK_COST_CREDITS
 from app.models.study import Study, StudyPersona, StudyInterview, ScoutResult, StudyReport
 from app.dependencies.auth import get_current_active_user, get_user_by_api_key
 from app.schemas.study import StudyOut, StudyDetailOut
 
 router = APIRouter(prefix="/research-flow", tags=["研究闭环"])
+
+
+# ── 小红书爬虫异步封装（进程池版，解决 Windows 线程中 playwright 子进程问题）──
+
+def _run_xiaohongshu_sync(keyword: str, max_posts: int = 5, max_comments: int = 20) -> list[dict]:
+    """用进程池运行同步的 playwright 爬虫，避免 Windows 线程池中 subprocess_exec 不支持的问题"""
+    import concurrent.futures
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            search_xiaohongshu,
+            keyword=keyword,
+            max_posts=max_posts,
+            scroll_times=3,
+            max_comments_per_post=max_comments,
+            min_delay=2,
+            max_delay=4,
+            page_load_wait=3,
+            save_screenshots=False,
+            save_json=False,
+            headless=True
+        )
+        return future.result(timeout=240)
 
 
 # ── Pydantic 请求/响应模型 ───────────────────────────────────────────
@@ -512,8 +535,10 @@ async def scout_and_build(
             p_desc = get_persona_desc(persona_obj)
             research_t = research_topic
 
-            # ① 生成专属关键词
-            keyword_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
+            # ── 用 try/finally 保证 persona_scout_done 一定发出 ────────
+            try:
+                # ① 生成专属关键词
+                keyword_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
 
 用户画像：{p_desc}
 性格/价值观：
@@ -527,80 +552,129 @@ async def scout_and_build(
 JSON 输出：
 {{"keywords": ["关键词1 关键词2", "关键词3 关键词4"]}}"""
 
-            keyword_task = _llm_complete(
-                [{"role": "user", "content": keyword_prompt}],
-                temperature=0.7,
-                json_mode=True,
-            )
+                keyword_result = await _llm_complete(
+                    [{"role": "user", "content": keyword_prompt}],
+                    temperature=0.7,
+                    json_mode=True,
+                )
 
-            # ② 社媒搜索（依赖关键词结果）
-            async def search_and_rebuild(kw_result: str):
+                # ② 解析关键词
                 try:
-                    kw_data = json.loads(kw_result)
-                    persona_kw = kw_data.get("keywords", [])
+                    kw_data = json.loads(keyword_result)
+                    persona_kw_list = kw_data.get("keywords", [])
                 except Exception:
-                    persona_kw = request.keywords
+                    persona_kw_list = request.keywords
 
                 await persona_queue.put((
                     'persona_scout_start',
                     {
                         'persona_id': p_id,
                         'persona_name': p_name,
-                        'keywords': persona_kw,
+                        'keywords': persona_kw_list,
                     }
                 ))
 
-                # 社媒内容搜索
-                scout_prompt = f"""你是一位擅长网络内容分析的研究员。
-请模拟从 {', '.join(request.platforms)} 平台上搜索关键词 "{', '.join(persona_kw)}" 的真实用户内容。
+                # ── 真实小红书搜索 ─────────────────────────────────────
+                all_xhs_posts = []
+                combined_kw = " ".join(persona_kw_list) if persona_kw_list else research_t
 
-目标用户画像：{p_desc}
-
-生成 5-8 条该类用户可能发布的真实帖子/评论，要求：
-- 语气、视角要符合该用户画像特征
-- 包含不同情感（正面/负面/中立）
-- 有具体细节（价格、功能、使用场景、个人经历）
-- 真实感强，像真实用户发的
-
-JSON 格式输出：
-{{
-  "posts": [
-    {{
-      "platform": "小红书",
-      "content": "...",
-      "sentiment": "positive|negative|neutral",
-      "key_points": ["关键点1", "关键点2"]
-    }}
-  ],
-  "insights": ["关于该用户群体的核心洞察1", "核心洞察2"]
-}}"""
-
-                scout_result_str = await _llm_complete(
-                    [{"role": "user", "content": scout_prompt}],
-                    temperature=0.8,
-                    json_mode=True,
-                )
+                await persona_queue.put((
+                    'scout_progress',
+                    {'persona_id': p_id, 'message': f'🔍 开始小红书搜索: {combined_kw}'}
+                ))
 
                 try:
-                    scout_data = json.loads(scout_result_str)
-                    posts = scout_data.get("posts", [])
-                    insights = scout_data.get("insights", [])
-                except Exception:
-                    posts, insights = [], []
+                    xhs_data = await asyncio.to_thread(
+                        _run_xiaohongshu_sync,
+                        keyword=combined_kw,
+                        max_posts=6,
+                        max_comments=20
+                    )
+                except Exception as e:
+                    logger.warning(f"小红书搜索失败: {e}")
+                    xhs_data = []
 
-                # 逐条发送帖子
-                for post in posts:
-                    post_with_persona = {**post, "persona_id": p_id, "persona_name": p_name}
+                if xhs_data:
                     await persona_queue.put((
-                        'post',
-                        {
-                            'post': post_with_persona,
-                            'persona_id': p_id,
-                        }
+                        'scout_progress',
+                        {'persona_id': p_id, 'message': f'✓ 找到 {len(xhs_data)} 篇小红书帖子，正在提取正文和评论...'}
                     ))
-                    await asyncio.sleep(0.03)
+                    for post in xhs_data:
+                        post_with_persona = {
+                            'platform': '小红书',
+                            'content': post.get('content', ''),
+                            'title': post.get('title', ''),
+                            'author': post.get('author', ''),
+                            'link': post.get('link', ''),
+                            'comments': post.get('comments', []),
+                            'persona_id': p_id,
+                            'persona_name': p_name,
+                            'is_real': True,
+                        }
+                        await persona_queue.put((
+                            'post',
+                            {'post': post_with_persona, 'persona_id': p_id}
+                        ))
+                        await asyncio.sleep(0.05)
+                    all_xhs_posts = xhs_data
+                else:
+                    await persona_queue.put((
+                        'scout_progress',
+                        {'persona_id': p_id, 'message': '⚠️ 未从小红书获取到数据，请检查网络或关键词'}
+                    ))
 
-                # 发送洞察
+                # ── 提炼真实评论精华（供后续访谈/报告使用）────────────────
+                # 从所有帖子中选出最有代表性/情绪最强的评论，保留口语化语感
+                all_comments_raw = []
+                for post in all_xhs_posts:
+                    for c in (post.get('comments', []) or [])[:5]:
+                        text = c.get('text', '').strip()
+                        if text and len(text) > 5:
+                            all_comments_raw.append(f"[{post.get('author','')}的帖子下] {text}")
+
+                # 截取精华评论（最多 8 条，总字数控制在 600 以内）
+                scout_comments = []
+                char_count = 0
+                for c in all_comments_raw[:15]:
+                    if char_count + len(c) < 600:
+                        scout_comments.append(c)
+                        char_count += len(c)
+                    if len(scout_comments) >= 8:
+                        break
+
+                # ── LLM 根据真实数据总结洞察 ─────────────────────────────
+                xhs_summary_prompt = f"""你是资深用户研究员，请根据收集到的小红书帖子和评论，总结该用户群体的核心洞察。
+
+人设：{p_name}（{p_desc}）
+研究主题：{research_t}
+搜索关键词：{combined_kw}
+
+收集到的帖子（{len(all_xhs_posts)} 篇）：
+{json.dumps([{'title': p.get('title',''), 'content': p.get('content','')[::][:300], 'author': p.get('author','')} for p in all_xhs_posts], ensure_ascii=False, indent=2)}
+
+评论样本：
+{json.dumps([[{'user': c.get('user',''), 'text': c.get('text','')} for c in (p.get('comments', [])[:3])] for p in all_xhs_posts[:3]], ensure_ascii=False, indent=2)}
+
+请总结：
+1. 该用户群体的核心关注点（2-3条）
+2. 他们的痛点和需求（2-3条）
+3. 他们在讨论中表现出的情绪和态度
+4. 有哪些值得关注的新发现
+
+JSON 输出：
+{{"insights": ["洞察1", "洞察2", "洞察3", "洞察4"]}}"""
+
+                try:
+                    insights_result = await _llm_complete(
+                        [{"role": "user", "content": xhs_summary_prompt}],
+                        temperature=0.6,
+                        json_mode=True,
+                    )
+                    insights_data = json.loads(insights_result)
+                    insights = insights_data.get("insights", [])
+                except Exception:
+                    insights = [f"在{research_t}领域，该用户群体表现出典型特征"]
+
                 if insights:
                     await persona_queue.put((
                         'persona_insights',
@@ -611,14 +685,25 @@ JSON 格式输出：
                         }
                     ))
 
-                # 人设增强
+                # ── 人设增强 ─────────────────────────────────────────
+                posts_for_rebuild = [
+                    {
+                        'platform': p.get('platform', '小红书'),
+                        'title': p.get('title', ''),
+                        'content': p.get('content', '')[:500],
+                        'author': p.get('author', ''),
+                        'comments': p.get('comments', [])[:5],
+                    }
+                    for p in all_xhs_posts
+                ]
+
                 rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
 
 原始人设：
 {json.dumps(p_data, ensure_ascii=False, indent=2)}
 
-该用户群体的真实社媒声音：
-{json.dumps(posts, ensure_ascii=False, indent=2)}
+该用户群体的真实社媒声音（来自小红书）：
+{json.dumps(posts_for_rebuild, ensure_ascii=False, indent=2)}
 
 洞察摘要：{', '.join(insights)}
 
@@ -639,9 +724,22 @@ JSON 输出（在原有字段上修改，并添加 "scouted_updates" 字段说�
                     updated_persona = json.loads(updated_str)
                     updated_persona["id"] = p_id
                     updated_persona["source"] = "scouted"
-                    updated_persona["scout_keywords"] = persona_kw
+                    updated_persona["scout_keywords"] = persona_kw_list
+                    updated_persona["xhs_posts_count"] = len(all_xhs_posts)
+                    # 混合方案核心字段：洞察摘要 + 真实评论精华
+                    updated_persona["scout_insights"] = insights
+                    updated_persona["scout_comments"] = scout_comments
+                    # 原始帖子元数据（供报告溯源引用）
+                    updated_persona["scout_posts_meta"] = [
+                        {
+                            'title': p.get('title', ''),
+                            'author': p.get('author', ''),
+                            'link': p.get('link', ''),
+                            'platform': '小红书',
+                        }
+                        for p in all_xhs_posts
+                    ]
 
-                    # 更新数据库
                     from app.core.database import AsyncSessionLocal
                     async with AsyncSessionLocal() as new_db:
                         persona_to_update = await new_db.get(StudyPersona, p_id)
@@ -657,15 +755,44 @@ JSON 输出（在原有字段上修改，并添加 "scouted_updates" 字段说�
                 except Exception as e:
                     logger.error(f"人设重构失败: {e}")
 
-                # 标记完成，并携带 posts 数量
-                await persona_queue.put(('persona_scout_done', {'persona_id': p_id, 'persona_name': p_name, 'posts_count': len(posts)}))
-                return posts
+                # ── 保存真实帖子到数据库 ─────────────────────────────────────
+                try:
+                    from app.core.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as new_db:
+                        posts_data = [
+                            {
+                                'platform': '小红书',
+                                'title': post.get('title', ''),
+                                'content': post.get('content', ''),
+                                'author': post.get('author', ''),
+                                'link': post.get('link', ''),
+                                'comments': post.get('comments', [])[:10],
+                                'is_real': True,
+                            }
+                            for post in all_xhs_posts
+                        ]
+                        scout_result = ScoutResult(
+                            study_id=request.study_id,
+                            persona_id=p_id,
+                            keywords=[combined_kw],
+                            platforms=['小红书'],
+                            posts=posts_data,
+                            insights=insights,
+                        )
+                        new_db.add(scout_result)
+                        await new_db.commit()
+                except Exception as e:
+                    logger.error(f"保存侦察结果失败: {e}")
 
-            # 编排：先关键词 → 再搜索+增强（这两步可并行吗？不，搜索依赖关键词）
-            # 但不同人设之间完全并行
-            kw_result = await keyword_task
-            posts = await search_and_rebuild(kw_result)
-            return posts
+            finally:
+                # 即使中间任何地方抛出异常，也要发出完成事件，防止 SSE 卡死
+                logger.info(f"scout_persona 完成: {p_name}")
+                await persona_queue.put(('persona_scout_done', {
+                    'persona_id': p_id,
+                    'persona_name': p_name,
+                    'posts_count': 0,
+                    'total': 0,
+                }))
 
         # ── 并行启动所有人设的侦察任务 ──────────────────────────────
         persona_queues: dict[str, asyncio.Queue] = {}
@@ -785,6 +912,14 @@ async def interview_chat(
 - 背景：{persona.background or ''}
 - 人设详情：{json.dumps(persona.persona_data, ensure_ascii=False)}
 
+## 社媒侦查发现的真实洞察（来自小红书）
+（这些是你这个群体在小红书上的真实讨论，请结合这些来回答）
+{chr(10).join(f"- {ins}" for ins in (persona.persona_data or {}).get("scout_insights", [])) or "暂无侦查数据"}
+
+## 你在小红书上看到的真实声音（评论样本）
+（这些是真实用户说的话，可以作为你回答时的参考）
+{chr(10).join(f"- {c}" for c in (persona.persona_data or {}).get("scout_comments", [])[:5]) or "暂无评论数据"}
+
 {design_section}
 
 ## 访谈要求
@@ -864,6 +999,12 @@ async def interview_chat_stream(
 
 背景：{persona.background or ''}
 人设详情：{json.dumps(persona.persona_data, ensure_ascii=False)}
+
+## 社媒侦查发现的真实洞察（来自小红书）
+{chr(10).join(f"- {ins}" for ins in (persona.persona_data or {}).get("scout_insights", [])) or "暂无侦查数据"}
+
+## 你在小红书上看到的真实声音（评论样本）
+{chr(10).join(f"- {c}" for c in (persona.persona_data or {}).get("scout_comments", [])[:5]) or "暂无评论数据"}
 
 {design_section}要求：
 - 完全以第一人称，口语化中文回答
@@ -945,6 +1086,12 @@ async def _auto_interview_persona(
 
 背景：{persona.background or ''}
 人设详情：{json.dumps(persona.persona_data, ensure_ascii=False)}
+
+## 社媒侦查发现的真实洞察（来自小红书）
+{chr(10).join(f"- {ins}" for ins in (persona.persona_data or {}).get("scout_insights", [])) or "暂无侦查数据"}
+
+## 你在小红书上看到的真实声音（评论样本）
+{chr(10).join(f"- {c}" for c in (persona.persona_data or {}).get("scout_comments", [])[:5]) or "暂无评论数据"}
 
 {design_section}要求：
 - 完全以第一人称，口语化中文回答
@@ -1216,7 +1363,7 @@ async def generate_report(
 - 核心行动建议摘要
 
 ## 二、研究方法（150字左右）
-- 研究方法说明：AI 模拟用户深度访谈 + 社交媒体舆情分析
+- 研究方法说明：社交媒体侦查 + 用户深度访谈 + 社交媒体舆情分析
 - 样本概况：必须明确说明用户画像数量、覆盖的人群特征
 - 研究局限性：诚实说明本研究的局限
 
@@ -1280,19 +1427,32 @@ async def generate_report(
     # 构建完整的用户画像数据（不截断）
     persona_details = []
     for p in personas:
+        p_data = p if isinstance(p, dict) else {}
+        # 收集社媒洞察和评论精华（来自侦察阶段）
+        scout_ins = p_data.get("scout_insights", [])
+        scout_cmts = p_data.get("scout_comments", [])
+        scout_posts = p_data.get("scout_posts_meta", [])
+
         persona_info = {
-            "姓名": p.get("name", "未知"),
-            "年龄": p.get("age", "未知"),
-            "职业": p.get("occupation", "未知"),
-            "城市": p.get("city", "未知"),
-            "背景": p.get("background", ""),
-            "性格特征": p.get("personality", ""),
-            "消费习惯": p.get("consumer_habits", ""),
-            "核心痛点": p.get("pain_points", ""),
-            "动机": p.get("motivations", ""),
-            "数字行为": p.get("digital_behavior", ""),
-            "核心价值观": p.get("core_values", []),
-            "态度": p.get("attitude", ""),
+            "姓名": p_data.get("name", "未知"),
+            "年龄": p_data.get("age", "未知"),
+            "职业": p_data.get("occupation", "未知"),
+            "城市": p_data.get("city", "未知"),
+            "背景": p_data.get("background", ""),
+            "性格特征": p_data.get("personality", ""),
+            "消费习惯": p_data.get("consumer_habits", ""),
+            "核心痛点": p_data.get("pain_points", ""),
+            "动机": p_data.get("motivations", ""),
+            "数字行为": p_data.get("digital_behavior", ""),
+            "核心价值观": p_data.get("core_values", []),
+            "态度": p_data.get("attitude", ""),
+            # 侦察阶段提炼的洞察（供报告引用）
+            "社媒洞察": scout_ins,
+            "真实评论样本": scout_cmts,
+            "参考帖子": [
+                f"- 【{post.get('title','')}】by @{post.get('author','')} {post.get('link','')}"
+                for post in scout_posts
+            ] if scout_posts else [],
         }
         persona_details.append(persona_info)
 
