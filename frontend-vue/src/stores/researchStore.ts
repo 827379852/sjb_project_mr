@@ -1,6 +1,17 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus, ScoutResult } from '@/types'
+
+const SCOUT_RESULTS_KEY = 'research_scout_results'
+
+function loadScoutResultsFromStorage(): ScoutResult[] {
+  try {
+    const raw = localStorage.getItem(SCOUT_RESULTS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
 
 export const useResearchStore = defineStore('research', () => {
   // State
@@ -12,7 +23,8 @@ export const useResearchStore = defineStore('research', () => {
   const personas = ref<Persona[]>([])
   const selectedPersona = ref<Persona | null>(null)
   const interviewHistory = ref<Record<string, InterviewMessage[]>>({})
-  const scoutResults = ref<ScoutResult[]>([])
+  // 从 localStorage 恢复社媒侦察结果
+  const scoutResults = ref<ScoutResult[]>(loadScoutResultsFromStorage())
   const attachments = ref<Attachment[]>([])
   const isStreaming = ref(false)
   const reportContent = ref('')
@@ -101,10 +113,12 @@ export const useResearchStore = defineStore('research', () => {
 
   function addScoutResult(result: ScoutResult) {
     scoutResults.value.push(result)
+    saveScoutResults()
   }
 
   function setScoutResults(results: ScoutResult[]) {
     scoutResults.value = results
+    saveScoutResults()
   }
 
   function updateStepProgress(step: keyof StepProgress, status: StepStatus) {
@@ -121,6 +135,7 @@ export const useResearchStore = defineStore('research', () => {
     selectedPersona.value = null
     interviewHistory.value = {}
     scoutResults.value = []
+    localStorage.removeItem(SCOUT_RESULTS_KEY)
     attachments.value = []
     isStreaming.value = false
     reportContent.value = ''
@@ -131,6 +146,10 @@ export const useResearchStore = defineStore('research', () => {
       interview: 'pending',
       report: 'pending'
     }
+  }
+
+  function saveScoutResults() {
+    localStorage.setItem(SCOUT_RESULTS_KEY, JSON.stringify(scoutResults.value))
   }
 
   return {

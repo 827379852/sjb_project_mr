@@ -24,11 +24,23 @@ export interface Post {
   sentiment: 'positive' | 'negative' | 'neutral'
 }
 
+// 社媒侦察帖子（完整字段，来自 SSE 实时事件）
+export interface ScoutPost {
+  platform?: string
+  content?: string
+  title?: string
+  author?: string
+  link?: string
+  sentiment?: 'positive' | 'negative' | 'neutral'
+  comments?: { user?: string; text?: string }[]
+  is_real?: boolean | string
+}
+
 // 社媒侦察结果（按人设分组）
 export interface ScoutResult {
   personaId: string
   personaName: string
-  posts: Post[]
+  posts: ScoutPost[]
   insights: string[]
 }
 
@@ -37,7 +49,7 @@ export interface ScoutResultRaw {
   id: string
   keywords: string[]
   platforms: string[]
-  posts: Post[]
+  posts: ScoutPost[]
   insights: string[]
 }
 

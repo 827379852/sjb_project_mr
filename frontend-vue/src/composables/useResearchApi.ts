@@ -114,26 +114,10 @@ export function useResearchApi() {
     })
     store.setInterviewHistory(history)
 
-    // 恢复社媒侦察结果
-    if (study.scout_results && study.scout_results.length > 0) {
-      // 后端返回的 scout_results 是按研究存储的，需要转换为按人设分组
-      // 由于后端没有存储 persona_id，我们暂时将所有帖子合并，显示为整体
-      const allResults = study.scout_results
-      const scoutData: { posts: any[]; insights: string[] } = { posts: [], insights: [] }
-      allResults.forEach(result => {
-        if (result.posts) scoutData.posts.push(...result.posts)
-        if (result.insights) scoutData.insights.push(...result.insights)
-      })
-      // 存储为一个特殊的侦察结果，使用 'all' 作为 personaId
-      if (scoutData.posts.length > 0 || scoutData.insights.length > 0) {
-        store.setScoutResults([{
-          personaId: 'all',
-          personaName: '所有用户',
-          posts: scoutData.posts,
-          insights: scoutData.insights
-        }])
-      }
-    }
+    // 恢复社媒侦察结果 - 使用 SSE 阶段已存入 store 的正确数据（按人设分组）
+    // loadStudy 不再从后端重新加载（后端 scout_results 合并了所有帖子），SSE 才是正确来源
+    // researchStore.scoutResults 已在 triggerScout SSE 结束时通过 addScoutResult 正确填充
+    // 只需要确保 store 中已有的数据保留，不需要额外处理
 
     // 恢复报告
     if (study.reports && study.reports.length > 0) {

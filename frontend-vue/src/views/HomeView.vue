@@ -9,11 +9,57 @@ import { useResearchStore, useUIStore, useAuthStore } from '@/stores'
 import { useMarkdown } from '@/composables'
 import type { SSEEvent, Persona } from '@/types'
 
+// 扩展 HTMLElement 以支持自定义属性
+declare module 'vue' {
+  interface HTMLElement {
+    _scoutToggleBound?: boolean
+    _postToggleBound?: boolean
+  }
+}
+
 const router = useRouter()
 const researchStore = useResearchStore()
 const uiStore = useUIStore()
 const authStore = useAuthStore()
 const { simpleMarkdown } = useMarkdown()
+
+// ── 社媒侦查折叠事件委托 ──────────────────────────────────────
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// 用 WeakMap 存储是否已绑定折叠事件（避免重复绑定）
+const _scoutBound = new WeakMap<Element, boolean>()
+const _postBound = new WeakMap<Element, boolean>()
+
+function applyScoutToggle(el: Element) {
+  // 人设头部折叠/展开
+  el.querySelectorAll('.persona-scout-header').forEach(header => {
+    if (_scoutBound.get(header)) return
+    _scoutBound.set(header, true)
+    const body = header.nextElementSibling
+    const icon = header.querySelector('.toggle-icon')
+    const hint = header.querySelector('.expand-hint')
+    header.addEventListener('click', () => {
+      const isOpen = (body as HTMLElement)?.style.display !== 'none'
+      ;(body as HTMLElement).style.display = isOpen ? 'none' : 'block'
+      if (icon) (icon as HTMLElement).style.transform = isOpen ? '' : 'rotate(90deg)'
+      if (hint) (hint as HTMLElement).textContent = isOpen ? '点击展开详情' : '点击收起'
+    })
+  })
+  // 帖子折叠/展开
+  el.querySelectorAll('.post-toggle').forEach(toggle => {
+    if (_postBound.get(toggle)) return
+    _postBound.set(toggle, true)
+    const toggleBody = toggle.querySelector('.post-toggle-body')
+    const toggleIcon = toggle.querySelector('.post-toggle-icon')
+    toggle.addEventListener('click', () => {
+      const isOpen = (toggleBody as HTMLElement)?.style.display !== 'none'
+      ;(toggleBody as HTMLElement).style.display = isOpen ? 'none' : 'block'
+      if (toggleIcon) (toggleIcon as HTMLElement).style.transform = isOpen ? '' : 'rotate(90deg)'
+    })
+  })
+}
 
 // 绑定全局方法供按钮 onclick 调用
 onMounted(() => {
@@ -157,32 +203,75 @@ function restoreMessagesFromStore() {
     let scoutContent = '<div class="post-feed">'
 
     researchStore.scoutResults.forEach(result => {
+      const pName = escapeHtml(result.personaName)
+      const postCount = result.posts.length
+      const insightCount = result.insights.length
       scoutContent += `
-        <div style="font-size:11px;color:var(--text-dim);margin:8px 0 4px;padding:4px 8px;background:var(--surface3);border-radius:4px">
-          👤 ${escapeHtml(result.personaName)} 的社媒声音
-        </div>
+        <div class="persona-scout-block" data-persona-id="${result.personaId || ''}">
+          <div class="persona-scout-header restore-header" style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;padding:6px 8px;background:var(--surface3);border-radius:6px;cursor:pointer;user-select:none">
+            <span class="toggle-icon" style="font-size:12px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
+            <span style="font-size:12px;color:var(--text-dim)">👤</span>
+            <span style="font-size:12px;color:var(--text)">${pName}</span>
+            <span style="font-size:11px;color:var(--text-dim)">${postCount} 篇帖子</span>
+            ${insightCount > 0 ? `<span style="font-size:10px;color:var(--accent);background:var(--surface2);padding:1px 5px;border-radius:3px">💡 ${insightCount}</span>` : ''}
+            <span class="expand-hint" style="margin-left:auto;font-size:10px;color:var(--text-dim)">点击展开详情</span>
+          </div>
+          <div class="persona-scout-body" style="display:none;padding-left:8px">
       `
       result.posts.forEach(post => {
         const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
-        scoutContent += `
-          <div class="post-item">
-            <div class="post-header">
-              <span class="post-platform ${post.platform}">${post.platform}</span>
-              <span class="post-sentiment">${sentimentEmoji}</span>
+        const platformColor = post.platform === '小红书' ? 'color:#FF2442' : post.platform === '微博' ? 'color:#FF9744' : 'color:#00BFFF'
+        const comments = post.comments || []
+        const isReal = post.is_real === true || post.is_real === 'true'
+        if (isReal && post.title) {
+          scoutContent += `
+            <div class="post-item">
+              <div class="post-toggle" data-post-id="${result.personaId}-${Date.now()}" style="margin:4px 0;padding:8px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);cursor:pointer;user-select:none">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="post-toggle-icon" style="font-size:10px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
+                  <span style="font-size:11px;${platformColor}">📕 ${post.platform || '小红书'}</span>
+                  <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(post.title)}</span>
+                  <span style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实</span>
+                  ${comments.length > 0 ? `<span style="font-size:10px;color:var(--text-dim)">💬 ${comments.length}</span>` : ''}
+                </div>
+                <div class="post-toggle-body" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+                  ${post.author ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">👤 ${escapeHtml(post.author)}</div>` : ''}
+                  ${post.content ? `<div style="font-size:12px;line-height:1.6;color:var(--text-secondary)">${escapeHtml(post.content || '')}</div>` : ''}
+                  ${post.link ? `<a href="${escapeHtml(post.link)}" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;display:inline-block;margin-top:6px">🔗 查看原文</a>` : ''}
+                  ${comments.length > 0 ? `
+                    <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+                      <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">💬 评论（${comments.length} 条）</div>
+                      ${comments.slice(0, 5).map((c: any) => `
+                        <div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-secondary)">
+                          <span style="color:var(--text)">${escapeHtml(c.user || '用户')}:</span> ${escapeHtml(c.text || '').substring(0, 120)}
+                        </div>
+                      `).join('')}
+                      ${comments.length > 5 ? `<div style="font-size:11px;color:var(--text-dim);padding-top:4px">还有 ${comments.length - 5} 条评论...</div>` : ''}
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
             </div>
-            <div class="post-content">${escapeHtml(post.content || '')}</div>
-          </div>
-        `
+          `
+        } else {
+          scoutContent += `
+            <div class="post-item" style="margin:4px 0;padding:8px;background:var(--surface2);border-radius:8px">
+              <div style="font-size:11px;${platformColor}">${post.platform || '小红书'} ${sentimentEmoji}</div>
+              <div style="font-size:12px;line-height:1.5;margin-top:4px;color:var(--text-secondary)">${escapeHtml(post.content || '')}</div>
+            </div>
+          `
+        }
       })
       if (result.insights.length > 0) {
         result.insights.forEach(insight => {
           scoutContent += `
-            <div class="insight-item" style="margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)">
+            <div style="margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)">
               <span style="font-size:12px;color:var(--text-dim)">💡 洞察</span> <span style="font-size:12px">${escapeHtml(insight)}</span>
             </div>
           `
         })
       }
+      scoutContent += '</div></div>'
     })
     scoutContent += '</div>'
 
@@ -301,6 +390,11 @@ function restoreMessagesFromStore() {
   }
 
   console.log('restored messages:', messages.value.length)
+
+  // 为侦察结果注入事件绑定（历史恢复 + 实时 SSE 均通过这里生效）
+  nextTick(() => {
+    applyScoutToggle(document.body)
+  })
 }
 
 // 标记是否正在创建新任务（用于防止 watch 清空正在显示的消息）
@@ -686,10 +780,6 @@ async function triggerPersonas() {
   researchStore.setStreaming(false)
 }
 
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
 async function triggerScout() {
   if (!researchStore.studyId || researchStore.isStreaming) return
 
@@ -725,57 +815,91 @@ async function triggerScout() {
     block.className = 'persona-scout-block'
     block.dataset.personaId = pId
     block.innerHTML = `
-      <div style="font-size:11px;color:var(--text-dim);margin:8px 0 4px;padding:4px 8px;background:var(--surface3);border-radius:4px">
-        👤 ${escapeHtml(pName)} 的社媒声音
+      <div class="persona-scout-header" data-persona-id="${pId}" style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;padding:6px 8px;background:var(--surface3);border-radius:6px;cursor:pointer;user-select:none">
+        <span class="toggle-icon" style="font-size:12px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
+        <span style="font-size:12px;color:var(--text-dim)">👤</span>
+        <span style="font-size:12px;color:var(--text)">${escapeHtml(pName)}</span>
+        <span class="post-count" style="font-size:11px;color:var(--text-dim)">加载中...</span>
+        <span class="expand-hint" style="margin-left:auto;font-size:10px;color:var(--text-dim)">点击展开详情</span>
       </div>
+      <div class="persona-scout-body" data-persona-id="${pId}" style="display:none;padding-left:8px"></div>
     `
+    // 点击头部折叠/展开
+    const header = block.querySelector('.persona-scout-header') as HTMLElement
+    const body = block.querySelector('.persona-scout-body') as HTMLElement
+    const icon = block.querySelector('.toggle-icon') as HTMLElement
+    const hint = block.querySelector('.expand-hint') as HTMLElement
+    header.addEventListener('click', () => {
+      const isOpen = body.style.display !== 'none'
+      body.style.display = isOpen ? 'none' : 'block'
+      icon.style.transform = isOpen ? '' : 'rotate(90deg)'
+      if (hint) hint.textContent = isOpen ? '点击展开详情' : '点击收起'
+    })
     return block
   }
 
+  function getPersonaBody(pId: string): HTMLElement | null {
+    return postsContainer.querySelector(`.persona-scout-body[data-persona-id="${pId}"]`) as HTMLElement | null
+  }
+
   function addPostToBlock(block: HTMLElement, post: any) {
+    const pId = block.dataset.personaId || ''
+    const body = getPersonaBody(pId)
+    if (!body) return
+
     const div = document.createElement('div')
     div.className = 'post-item'
     const isReal = post.is_real === true || post.is_real === 'true'
-    const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
     const platformColor = post.platform === '小红书' ? 'color:#FF2442' : post.platform === '微博' ? 'color:#FF9744' : 'color:#00BFFF'
+    const comments = post.comments || []
 
-    // 真实帖子展示：标题 + 正文 + 评论
     if (isReal && post.title) {
-      const comments = post.comments || []
-      const commentsHtml = comments.length > 0 ? `
-        <div class="post-comments" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">💬 评论（${comments.length} 条）</div>
-          ${comments.slice(0, 5).map((c: any) => `
-            <div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-secondary)">
-              <span style="color:var(--text)">${escapeHtml(c.user || '用户')}:</span> ${escapeHtml(c.text || '').substring(0, 100)}
-            </div>
-          `).join('')}
-          ${comments.length > 5 ? `<div style="font-size:11px;color:var(--text-dim);padding-top:4px">还有 ${comments.length - 5} 条评论...</div>` : ''}
-        </div>
-      ` : ''
-
+      // 真实帖子：默认折叠，点击展开
       div.innerHTML = `
-        <div class="post-header">
-          <span class="post-platform" style="${platformColor}">📕 ${post.platform || '小红书'}</span>
-          <span class="post-source" style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实数据</span>
-          ${post.link ? `<a href="${escapeHtml(post.link)}" target="_blank" style="font-size:10px;color:var(--accent);text-decoration:none;margin-left:8px">🔗 查看原文</a>` : ''}
+        <div class="post-toggle" data-post-id="${pId}-${Date.now()}" style="margin:4px 0;padding:8px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);cursor:pointer;user-select:none">
+          <div class="post-toggle-header" style="display:flex;align-items:center;gap:8px">
+            <span class="post-toggle-icon" style="font-size:10px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
+            <span style="font-size:11px;${platformColor}">📕 ${post.platform || '小红书'}</span>
+            <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(post.title)}</span>
+            <span style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实</span>
+            ${comments.length > 0 ? `<span style="font-size:10px;color:var(--text-dim)">💬 ${comments.length}</span>` : ''}
+          </div>
+          <div class="post-toggle-body" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+            ${post.author ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">👤 ${escapeHtml(post.author)}</div>` : ''}
+            ${post.content ? `<div style="font-size:12px;line-height:1.6;color:var(--text-secondary)">${escapeHtml(post.content || '')}</div>` : ''}
+            ${post.link ? `<a href="${escapeHtml(post.link)}" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;display:inline-block;margin-top:6px">🔗 查看原文</a>` : ''}
+            ${comments.length > 0 ? `
+              <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+                <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">💬 评论（${comments.length} 条）</div>
+                ${comments.slice(0, 5).map((c: any) => `
+                  <div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-secondary)">
+                    <span style="color:var(--text)">${escapeHtml(c.user || '用户')}:</span> ${escapeHtml(c.text || '').substring(0, 120)}
+                  </div>
+                `).join('')}
+                ${comments.length > 5 ? `<div style="font-size:11px;color:var(--text-dim);padding-top:4px">还有 ${comments.length - 5} 条评论...</div>` : ''}
+              </div>
+            ` : ''}
+          </div>
         </div>
-        ${post.title ? `<div class="post-title" style="font-weight:600;margin:6px 0;font-size:13px;color:var(--text)">${escapeHtml(post.title)}</div>` : ''}
-        <div class="post-content" style="font-size:12px;line-height:1.6;margin:4px 0">${escapeHtml(post.content || '')}</div>
-        ${post.author ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">👤 ${escapeHtml(post.author)}</div>` : ''}
-        ${commentsHtml}
       `
+      // 帖子展开/折叠
+      const toggle = div.querySelector('.post-toggle') as HTMLElement
+      const toggleBody = div.querySelector('.post-toggle-body') as HTMLElement
+      const toggleIcon = div.querySelector('.post-toggle-icon') as HTMLElement
+      toggle.addEventListener('click', () => {
+        const isOpen = toggleBody.style.display !== 'none'
+        toggleBody.style.display = isOpen ? 'none' : 'block'
+        toggleIcon.style.transform = isOpen ? '' : 'rotate(90deg)'
+      })
     } else {
-      // 模拟数据展示
+      // 模拟帖子（不折叠，展示完整）
+      const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
       div.innerHTML = `
-        <div class="post-header">
-          <span class="post-platform" style="${platformColor}">${post.platform || '小红书'}</span>
-          <span class="post-sentiment">${sentimentEmoji}</span>
-        </div>
-        <div class="post-content">${escapeHtml(post.content || '')}</div>
+        <div style="font-size:11px;${platformColor}">${post.platform || '小红书'}</span> <span style="font-size:12px">${sentimentEmoji}</span></div>
+        <div style="font-size:12px;line-height:1.5;margin-top:4px;color:var(--text-secondary)">${escapeHtml(post.content || '')}</div>
       `
     }
-    block.appendChild(div)
+    body.appendChild(div)
   }
 
   function updateProgress(html: string) {
@@ -863,7 +987,11 @@ async function triggerScout() {
             if (personaScoutData[personaId]) {
               personaScoutData[personaId].posts.push(post)
               totalPosts++
-              // 并行模式下：直接通过 personaId 查找对应区块，不依赖 currentPersonaBlock
+              // 更新帖子计数
+              const header = postsContainer.querySelector(`.persona-scout-header[data-persona-id="${personaId}"]`)
+              const countSpan = header?.querySelector('.post-count')
+              if (countSpan) countSpan.textContent = `${personaScoutData[personaId].posts.length} 篇帖子`
+              // 通过 personaId 查找对应区块，帖子放入折叠 body
               const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${personaId}"]`) as HTMLElement
               if (block) {
                 addPostToBlock(block, post)
@@ -874,14 +1002,15 @@ async function triggerScout() {
             const personaId = (event as any).persona_id
             if (personaScoutData[personaId]) {
               personaScoutData[personaId].insights.push(...insights)
-              // 直接通过 personaId 查找对应区块（并行模式下也可靠）
-              const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${personaId}"]`) as HTMLElement
-              if (block && insights.length > 0) {
-                const insightDiv = document.createElement('div')
-                insightDiv.className = 'insight-item'
-                insightDiv.style.cssText = 'margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)'
-                insightDiv.innerHTML = `<span style="font-size:12px;color:var(--text-dim)">💡 洞察</span> <span style="font-size:12px">${escapeHtml(insights[0])}</span>`
-                block.appendChild(insightDiv)
+              const body = getPersonaBody(personaId)
+              if (body && insights.length > 0) {
+                insights.forEach(insight => {
+                  const insightDiv = document.createElement('div')
+                  insightDiv.className = 'insight-item'
+                  insightDiv.style.cssText = 'margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)'
+                  insightDiv.innerHTML = `<span style="font-size:12px;color:var(--text-dim)">💡 洞察</span> <span style="font-size:12px">${escapeHtml(insight)}</span>`
+                  body.appendChild(insightDiv)
+                })
               }
             }
           } else if (event.type === 'updated_persona') {
@@ -890,13 +1019,11 @@ async function triggerScout() {
             researchStore.updatePersona(p)
             // 更新人设卡片 UI（详情面板内容 + 增强标记）
             updatePersonaCardDetail(p)
-            // 更新社媒声音区块的人设名称
+            // 更新社媒区块头部的人设名称
             const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${p.id}"]`)
             if (block) {
-              const header = block.querySelector('div[style*="surface3"]')
-              if (header) {
-                header.textContent = `👤 ${escapeHtml(p.name || '用户')} 的社媒声音`
-              }
+              const nameSpan = block.querySelector('.persona-scout-header span:nth-child(3)')
+              if (nameSpan) nameSpan.textContent = escapeHtml(p.name || '用户')
             }
           } else if (event.type === 'persona_scout_done') {
             const pName = (event as any).persona_name
@@ -905,7 +1032,12 @@ async function triggerScout() {
             if (personaScoutData[pId]) {
               personaScoutData[pId].done = true
             }
-            updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成（${postsCount} 篇小红书帖子）`)
+            // 完成时更新帖子计数
+            const header = postsContainer.querySelector(`.persona-scout-header[data-persona-id="${pId}"]`)
+            const countSpan = header?.querySelector('.post-count')
+            const data = personaScoutData[pId]
+            if (countSpan) countSpan.textContent = data ? `${data.posts.length} 篇帖子` : `${postsCount} 篇帖子`
+            updateProgress(`<span style="color:var(--green)">✓</span> ${escapeHtml(pName)} 侦察完成${postsCount > 0 ? `（${postsCount} 篇小红书帖子）` : ''}`)
           } else if (event.type === 'step' && event.step === 'build_persona' && event.status === 'done') {
             // 记录完成状态，暂不更新 DOM（等 SSE 结束后统一处理）
             // 通过 flag 标记，等 SSE 结束后设置 stepCard 状态
@@ -941,6 +1073,7 @@ async function triggerScout() {
     // 自动进入下一阶段：自动深度访谈
     await nextTick()
     scrollToBottom()
+    applyScoutToggle(document.body)
     researchStore.setStreaming(false)
     // 自动触发访谈
     await triggerAutoInterview()
