@@ -93,31 +93,60 @@ export function useResearchApi() {
     store.setDesignContent(study.design_content || '')
 
     // 恢复人设
-    const personaList = study.personas.map(p => ({
+    const personaList: any[] = study.personas.map(p => ({
       id: p.id,
       name: p.name,
       age: p.age,
       occupation: p.occupation,
       city: p.city,
       background: p.background,
-      ...p.persona_data
+      ...(p.persona_data || {})
     }))
     store.setPersonas(personaList)
 
     // 恢复访谈历史 - 同一 persona 可能有多条记录，需要合并
-    const history: Record<string, { role: string; content: string }[]> = {}
+    const history: Record<string, { role: 'user' | 'assistant'; content: string }[]> = {}
     study.interviews.forEach(i => {
       if (!history[i.persona_id]) {
         history[i.persona_id] = []
       }
-      history[i.persona_id].push(...i.messages)
+      history[i.persona_id].push(...(i.messages as { role: 'user' | 'assistant'; content: string }[]))
     })
-    store.setInterviewHistory(history)
+    store.setInterviewHistory(history as Record<string, import('@/types').InterviewMessage[]>)
 
-    // 恢复社媒侦察结果 - 使用 SSE 阶段已存入 store 的正确数据（按人设分组）
-    // loadStudy 不再从后端重新加载（后端 scout_results 合并了所有帖子），SSE 才是正确来源
-    // researchStore.scoutResults 已在 triggerScout SSE 结束时通过 addScoutResult 正确填充
-    // 只需要确保 store 中已有的数据保留，不需要额外处理
+    // 恢复社媒侦察结果 - 从后端加载并按 persona_id 分组，跳过无归属的汇总记录
+    if (study.scout_results && study.scout_results.length > 0) {
+      const grouped: Record<string, { personaId: string; personaName: string; posts: any[]; insights: string[] }> = {}
+      study.scout_results.forEach((sr: any) => {
+        // 跳过无 persona_id 的汇总记录（只保留有人设归属的数据）
+        const pid = sr.persona_id
+        if (!pid) return
+        if (!grouped[pid]) {
+          // 查找对应的人设名称
+          const persona = personaList.find((p: any) => p.id === pid)
+          grouped[pid] = {
+            personaId: pid,
+            personaName: persona?.name || sr.keywords?.[0] || '未知用户',
+            posts: [],
+            insights: []
+          }
+        }
+        // 合并帖子（去重）
+        const existingPostIds = new Set((grouped[pid].posts as any[]).map((p: any) => p.link || p.title))
+        ;(sr.posts || []).forEach((post: any) => {
+          const key = post.link || post.title
+          if (key && !existingPostIds.has(key)) {
+            grouped[pid].posts.push(post)
+            existingPostIds.add(key)
+          }
+        })
+        // 合并洞察
+        if (sr.insights) {
+          grouped[pid].insights.push(...sr.insights)
+        }
+      })
+      store.setScoutResults(Object.values(grouped))
+    }
 
     // 恢复报告
     if (study.reports && study.reports.length > 0) {

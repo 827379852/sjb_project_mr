@@ -223,14 +223,16 @@ function restoreMessagesFromStore() {
         const platformColor = post.platform === '小红书' ? 'color:#FF2442' : post.platform === '微博' ? 'color:#FF9744' : 'color:#00BFFF'
         const comments = post.comments || []
         const isReal = post.is_real === true || post.is_real === 'true'
-        if (isReal && post.title) {
+        const rt = (post.title && String(post.title).trim()) || ''
+        const displayTitle = rt || (post.content || '').replace(/\s+/g, ' ').trim().slice(0, 80) || '（无标题）'
+        if (isReal && (rt || post.content)) {
           scoutContent += `
             <div class="post-item">
               <div class="post-toggle" data-post-id="${result.personaId}-${Date.now()}" style="margin:4px 0;padding:8px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);cursor:pointer;user-select:none">
                 <div style="display:flex;align-items:center;gap:8px">
                   <span class="post-toggle-icon" style="font-size:10px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
                   <span style="font-size:11px;${platformColor}">📕 ${post.platform || '小红书'}</span>
-                  <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(post.title)}</span>
+                  <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(displayTitle)}</span>
                   <span style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实</span>
                   ${comments.length > 0 ? `<span style="font-size:10px;color:var(--text-dim)">💬 ${comments.length}</span>` : ''}
                 </div>
@@ -481,22 +483,37 @@ async function handleSend(text: string) {
   }
 }
 
-function parseSSEEvents(text: string): string[] {
-  const events: string[] = []
-  const lines = text.split('\n')
-  let currentEvent = ''
-
+/** 从单帧原始文本提取 data: 负载（支持多行 data:） */
+function extractSSEDataPayload(rawFrame: string): string | null {
+  const lines = rawFrame.split('\n')
+  const parts: string[] = []
   for (const line of lines) {
     if (line.startsWith('data: ')) {
-      if (currentEvent) events.push(currentEvent)
-      currentEvent = line.slice(6)
-    } else if (line === '' && currentEvent) {
-      events.push(currentEvent)
-      currentEvent = ''
+      parts.push(line.slice(6))
+    } else if (line.startsWith('data:')) {
+      parts.push(line.slice(5).replace(/^\s+/, ''))
     }
   }
-  if (currentEvent) events.push(currentEvent)
-  return events
+  if (parts.length === 0) return null
+  return parts.join('\n')
+}
+
+/**
+ * 按 SSE 以空行 \\n\\n 分隔帧；未凑齐一整帧的内容保留在 rest。
+ * 避免 TCP 分包时单行 JSON 被截断、误拆或丢弃，导致社媒 post 等大包事件丢失。
+ */
+function splitSSEDataFrames(buffer: string): { frames: string[]; rest: string } {
+  const frames: string[] = []
+  let rest = buffer
+  while (true) {
+    const idx = rest.indexOf('\n\n')
+    if (idx === -1) break
+    const rawFrame = rest.slice(0, idx)
+    rest = rest.slice(idx + 2)
+    const payload = extractSSEDataPayload(rawFrame)
+    if (payload !== null && payload !== '') frames.push(payload)
+  }
+  return { frames, rest }
 }
 
 async function runDesignStudy(userRequest: string) {
@@ -544,53 +561,37 @@ async function runDesignStudy(userRequest: string) {
     const decoder = new TextDecoder()
     let buffer = ''
 
+    function handleDesignEvent(eventStr: string) {
+      if (eventStr === '[DONE]') return
+      try {
+        const event = JSON.parse(eventStr) as SSEEvent
+        if (event.type === 'study_id') {
+          researchStore.setStudyId(event.study_id as string)
+          researchStore.setStudyTitle(userRequest.substring(0, 20) + '...')
+        } else if (event.type === 'content') {
+          fullContent += event.delta as string
+          updateStepCardContent(fullContent)
+          scrollToBottom()
+        } else if (event.type === 'step' && event.status === 'done') {
+          updateStepCardStatus('done')
+        }
+      } catch { /* 单帧损坏则跳过 */ }
+    }
+
     while (true) {
       const { done, value } = await reader.read()
-      if (value) {
-        buffer += decoder.decode(value, { stream: true })
-      }
+      if (value) buffer += decoder.decode(value, { stream: true })
+
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      for (const eventStr of frames) handleDesignEvent(eventStr)
+
       if (done) {
         if (buffer.trim()) {
-          const events = parseSSEEvents(buffer)
-          for (const eventStr of events) {
-            if (eventStr === '[DONE]') continue
-            try {
-              const event = JSON.parse(eventStr) as SSEEvent
-              if (event.type === 'study_id') {
-                researchStore.setStudyId(event.study_id as string)
-                researchStore.setStudyTitle(userRequest.substring(0, 20) + '...')
-              } else if (event.type === 'content') {
-                fullContent += event.delta as string
-                updateStepCardContent(fullContent)
-              } else if (event.type === 'step' && event.status === 'done') {
-                updateStepCardStatus('done')
-              }
-            } catch {}
-          }
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          for (const eventStr of flush.frames) handleDesignEvent(eventStr)
         }
         break
-      }
-
-      const events = parseSSEEvents(buffer)
-      buffer = ''
-
-      for (const eventStr of events) {
-        if (eventStr === '[DONE]') continue
-        try {
-          const event = JSON.parse(eventStr) as SSEEvent
-          if (event.type === 'study_id') {
-            researchStore.setStudyId(event.study_id as string)
-            researchStore.setStudyTitle(userRequest.substring(0, 20) + '...')
-          } else if (event.type === 'content') {
-            fullContent += event.delta as string
-            updateStepCardContent(fullContent)
-            scrollToBottom()
-          } else if (event.type === 'step' && event.status === 'done') {
-            updateStepCardStatus('done')
-          }
-        } catch {
-          buffer = eventStr
-        }
       }
     }
 
@@ -727,12 +728,11 @@ async function triggerPersonas() {
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = parseSSEEvents(buffer)
-      buffer = ''
+      if (value) buffer += decoder.decode(value, { stream: true })
 
-      for (const eventStr of events) {
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      for (const eventStr of frames) {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
@@ -755,9 +755,27 @@ async function triggerPersonas() {
             updateStepCardStatus('error')
             updateStepCardContent(`❌ ${(event as any).message || '发生错误'}`)
           }
-        } catch {
-          buffer = eventStr
+        } catch { /* 跳过损坏帧 */ }
+      }
+
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          for (const eventStr of flush.frames) {
+            if (eventStr === '[DONE]') continue
+            try {
+              const event = JSON.parse(eventStr) as SSEEvent
+              if (event.type === 'persona') {
+                const p = event.persona as Persona
+                researchStore.addPersona(p)
+                updateStepCardContent(buildPersonasGridHtml())
+              } else if (event.type === 'step' && event.status === 'done') {
+                updateStepCardStatus('done')
+              }
+            } catch { /* */ }
+          }
         }
+        break
       }
     }
 
@@ -852,15 +870,17 @@ async function triggerScout() {
     const isReal = post.is_real === true || post.is_real === 'true'
     const platformColor = post.platform === '小红书' ? 'color:#FF2442' : post.platform === '微博' ? 'color:#FF9744' : 'color:#00BFFF'
     const comments = post.comments || []
+    const rawTitle = (post.title && String(post.title).trim()) || ''
+    const displayTitle = rawTitle || (post.content || '').replace(/\s+/g, ' ').trim().slice(0, 80) || '（无标题）'
 
-    if (isReal && post.title) {
+    if (isReal && (rawTitle || post.content)) {
       // 真实帖子：默认折叠，点击展开
       div.innerHTML = `
         <div class="post-toggle" data-post-id="${pId}-${Date.now()}" style="margin:4px 0;padding:8px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);cursor:pointer;user-select:none">
           <div class="post-toggle-header" style="display:flex;align-items:center;gap:8px">
             <span class="post-toggle-icon" style="font-size:10px;color:var(--text-dim);transition:transform 0.2s;display:inline-block">▶</span>
             <span style="font-size:11px;${platformColor}">📕 ${post.platform || '小红书'}</span>
-            <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(post.title)}</span>
+            <span style="font-size:12px;color:var(--text);font-weight:500;flex:1">${escapeHtml(displayTitle)}</span>
             <span style="font-size:10px;color:var(--green);background:var(--surface3);padding:2px 6px;border-radius:3px">真实</span>
             ${comments.length > 0 ? `<span style="font-size:10px;color:var(--text-dim)">💬 ${comments.length}</span>` : ''}
           </div>
@@ -952,14 +972,8 @@ async function triggerScout() {
     const decoder = new TextDecoder()
     let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = parseSSEEvents(buffer)
-      buffer = ''
-
-      for (const eventStr of events) {
+    const processScoutFrames = (frames: string[]) => {
+      for (const eventStr of frames) {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
@@ -978,7 +992,6 @@ async function triggerScout() {
           } else if (event.type === 'scout_progress') {
             // 侦察进度消息
             const msg = (event as any).message || ''
-            const pId = (event as any).persona_id || currentPersonaId
             updateProgress(`<span style="color:var(--accent)">${msg}</span>`)
           } else if (event.type === 'post') {
             const post = (event as any).post
@@ -1004,7 +1017,7 @@ async function triggerScout() {
               personaScoutData[personaId].insights.push(...insights)
               const body = getPersonaBody(personaId)
               if (body && insights.length > 0) {
-                insights.forEach(insight => {
+                insights.forEach((insight: string) => {
                   const insightDiv = document.createElement('div')
                   insightDiv.className = 'insight-item'
                   insightDiv.style.cssText = 'margin:6px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--accent)'
@@ -1044,9 +1057,23 @@ async function triggerScout() {
             scoutDoneFlag = true
           }
         } catch (e) {
-          console.warn('[Scout] SSE parse error, keeping buffer. raw:', eventStr?.substring(0, 200), e)
-          buffer = eventStr
+          console.warn('[Scout] SSE JSON 解析失败（可能为损坏帧）:', eventStr?.substring(0, 200), e)
         }
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      processScoutFrames(frames)
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          processScoutFrames(flush.frames)
+        }
+        break
       }
     }
 
@@ -1196,14 +1223,8 @@ async function triggerAutoInterview() {
     const decoder = new TextDecoder()
     let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = parseSSEEvents(buffer)
-      buffer = ''
-
-      for (const eventStr of events) {
+    const processInterviewFrames = (frames: string[]) => {
+      for (const eventStr of frames) {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
@@ -1294,9 +1315,22 @@ async function triggerAutoInterview() {
             // 记录完成状态，暂不更新 DOM（等 SSE 结束后统一处理）
             interviewDoneFlag = true
           }
-        } catch {
-          buffer = eventStr
+        } catch { /* 跳过损坏帧 */ }
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      processInterviewFrames(frames)
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          processInterviewFrames(flush.frames)
         }
+        break
       }
     }
 
@@ -1361,14 +1395,8 @@ async function triggerReport() {
     const decoder = new TextDecoder()
     let buffer = ''
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = parseSSEEvents(buffer)
-      buffer = ''
-
-      for (const eventStr of events) {
+    const processReportFrames = (frames: string[]) => {
+      for (const eventStr of frames) {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
@@ -1381,9 +1409,22 @@ async function triggerReport() {
             reportDoneFlag = true
             researchStore.setReportContent(fullReport)
           }
-        } catch {
-          buffer = eventStr
+        } catch { /* 跳过损坏帧 */ }
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      processReportFrames(frames)
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          processReportFrames(flush.frames)
         }
+        break
       }
     }
 
@@ -1443,21 +1484,30 @@ async function runInterview(question: string) {
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = parseSSEEvents(buffer)
-      buffer = ''
-
-      for (const eventStr of events) {
+      if (value) buffer += decoder.decode(value, { stream: true })
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      for (const eventStr of frames) {
         if (eventStr === '[DONE]') continue
         try {
           const event = JSON.parse(eventStr) as SSEEvent
           if (event.type === 'content') {
             fullResponse += event.delta as string
           }
-        } catch {
-          buffer = eventStr
+        } catch { /* 跳过损坏帧 */ }
+      }
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          for (const eventStr of flush.frames) {
+            if (eventStr === '[DONE]') continue
+            try {
+              const event = JSON.parse(eventStr) as SSEEvent
+              if (event.type === 'content') fullResponse += event.delta as string
+            } catch { /* */ }
+          }
         }
+        break
       }
     }
 

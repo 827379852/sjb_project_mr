@@ -47,6 +47,7 @@ export interface ScoutResult {
 // 社媒侦察原始数据（从后端加载的格式）
 export interface ScoutResultRaw {
   id: string
+  persona_id?: string
   keywords: string[]
   platforms: string[]
   posts: ScoutPost[]

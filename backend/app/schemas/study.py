@@ -61,6 +61,7 @@ class InterviewOut(BaseModel):
 class ScoutResultOut(BaseModel):
     """侦察结果输出"""
     id: str
+    persona_id: str | None = None
     keywords: List[str] = Field(default_factory=list)
     platforms: List[str] = Field(default_factory=list)
     posts: List[Dict[str, Any]] = Field(default_factory=list)

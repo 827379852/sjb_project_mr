@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus, ScoutResult } from '@/types'
 
 const SCOUT_RESULTS_KEY = 'research_scout_results'

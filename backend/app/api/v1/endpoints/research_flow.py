@@ -35,6 +35,11 @@ from app.schemas.study import StudyOut, StudyDetailOut
 router = APIRouter(prefix="/research-flow", tags=["研究闭环"])
 
 
+# ── 小红书爬虫并发控制（最多同时运行 1 个实例）────────────────────
+# 用信号量限制，避免多个用户同时触发爬虫互相干扰
+_xhs_semaphore = asyncio.Semaphore(1)
+
+
 # ── 小红书爬虫异步封装（进程池版，解决 Windows 线程中 playwright 子进程问题）──
 
 def _run_xiaohongshu_sync(keyword: str, max_posts: int = 5, max_comments: int = 20) -> list[dict]:
@@ -536,6 +541,7 @@ async def scout_and_build(
             research_t = research_topic
 
             # ── 用 try/finally 保证 persona_scout_done 一定发出 ────────
+            all_xhs_posts: list = []
             try:
                 # ① 生成专属关键词
                 keyword_prompt = f"""根据以下用户画像和研究主题，生成 2-3 个精准的社交媒体搜索关键词组合。
@@ -575,7 +581,6 @@ JSON 输出：
                 ))
 
                 # ── 真实小红书搜索 ─────────────────────────────────────
-                all_xhs_posts = []
                 combined_kw = " ".join(persona_kw_list) if persona_kw_list else research_t
 
                 await persona_queue.put((
@@ -584,12 +589,13 @@ JSON 输出：
                 ))
 
                 try:
-                    xhs_data = await asyncio.to_thread(
-                        _run_xiaohongshu_sync,
-                        keyword=combined_kw,
-                        max_posts=6,
-                        max_comments=20
-                    )
+                    async with _xhs_semaphore:
+                        xhs_data = await asyncio.to_thread(
+                            _run_xiaohongshu_sync,
+                            keyword=combined_kw,
+                            max_posts=6,
+                            max_comments=20
+                        )
                 except Exception as e:
                     logger.warning(f"小红书搜索失败: {e}")
                     xhs_data = []
@@ -787,11 +793,12 @@ JSON 输出（在原有字段上修改，并添加 "scouted_updates" 字段说�
             finally:
                 # 即使中间任何地方抛出异常，也要发出完成事件，防止 SSE 卡死
                 logger.info(f"scout_persona 完成: {p_name}")
+                _cnt = len(all_xhs_posts)
                 await persona_queue.put(('persona_scout_done', {
                     'persona_id': p_id,
                     'persona_name': p_name,
-                    'posts_count': 0,
-                    'total': 0,
+                    'posts_count': _cnt,
+                    'total': _cnt,
                 }))
 
         # ── 并行启动所有人设的侦察任务 ──────────────────────────────
