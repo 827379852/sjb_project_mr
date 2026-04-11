@@ -6,7 +6,8 @@ import sys
 import io
 
 # 设置标准输出编码为 UTF-8（解决 Windows 终端 emoji 乱码问题）
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace',line_buffering=True)
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
 
 # 模拟真实浏览器的 User-Agent 列表
 USER_AGENTS = [
@@ -221,134 +222,6 @@ def search_xiaohongshu(
         page.wait_for_timeout(5000)
         page.screenshot(path="screenshot1.png")
 
-        # ========== 筛选操作 ==========
-        print("正在设置筛选条件...")
-        try:
-            # 鼠标悬停到筛选按钮（漏斗图标）展开下拉菜单
-            filter_clicked = False
-            filter_selectors = [
-                ".filter-btn", ".filter", "[class*='filter']",
-                ".sort-filter", ".search-filter", ".feeds-filter",
-                "button.filter", "span.filter", "div.filter",
-                "[data-v-b1556b3c]",  # 小红书可能的内部选择器
-                ".search-result .filter-btn",
-                ".note-list-header .filter"
-            ]
-            for selector in filter_selectors:
-                try:
-                    filter_btn = page.wait_for_selector(selector, timeout=3000)
-                    if filter_btn:
-                        # 先鼠标悬停，等待下拉菜单出现
-                        filter_btn.hover()
-                        print("  已悬停到筛选按钮")
-                        page.wait_for_timeout(2000)
-
-                        # 悬停后再点击
-                        # filter_btn.click()
-                        filter_clicked = True
-                        # print("  已点击筛选按钮")
-                        page.wait_for_timeout(2000)
-                        break
-                except:
-                    continue
-            page.screenshot(path = r'D:\temp\1.jpg')
-            if not filter_clicked:
-                # 尝试通过文本查找筛选按钮
-                try:
-                    all_buttons = page.query_selector_all("button, span, div")
-                    for btn in all_buttons:
-                        try:
-                            btn_text = btn.inner_text()
-                            if "筛选" in btn_text:
-                                # 先悬停
-                                btn.hover()
-                                print("  已悬停到筛选按钮（通过文本匹配）")
-                                page.wait_for_timeout(2000)
-                                # 再点击
-                                btn.click()
-                                filter_clicked = True
-                                print("  已点击筛选按钮（通过文本匹配）")
-                                page.wait_for_timeout(2000)
-                                break
-                        except:
-                            continue
-                except:
-                    pass
-
-            if filter_clicked:
-                page.wait_for_timeout(2000)
-
-                # 1. 选择排序方式：最多点赞
-                try:
-                    # 直接定位包含"最多点赞"文本的元素
-                    sort_option = page.get_by_text("最多点赞", exact=True).nth(1)
-                    if sort_option.is_visible():
-                        sort_option.click()
-                        print("  已选择：最多点赞")
-                        page.wait_for_timeout(1000)
-                    else:
-                        # 备用：尝试其他选择器
-                        sort_option = page.locator("span:has-text('最多点赞')").first
-                        if sort_option.is_visible():
-                            sort_option.click()
-                            print("  已选择：最多点赞（备用选择器）")
-                            page.wait_for_timeout(1000)
-                except Exception as e:
-                    print(f"  选择最多点赞失败: {e}")
-
-                # 2. 选择时间范围：一周内
-                try:
-                    time_option = page.get_by_text("一周内", exact=True).nth(1)
-                    if time_option.is_visible():
-                        time_option.click()
-                        print("  已选择：一周内")
-                        page.wait_for_timeout(1000)
-                    else:
-                        time_option = page.locator("span:has-text('一周内')").first
-                        if time_option.is_visible():
-                            time_option.click()
-                            print("  已选择：一周内（备用选择器）")
-                            page.wait_for_timeout(1000)
-                except Exception as e:
-                    print(f"  选择一周内失败: {e}")
-
-                # 3. 选择内容类型：图文
-                try:
-                    type_option = page.get_by_text("图文", exact=True).nth(1)
-                    if type_option.is_visible():
-                        type_option.click()
-                        print("  已选择：图文")
-                        page.wait_for_timeout(1000)
-                    else:
-                        type_option = page.locator("span:has-text('图文')").first
-                        if type_option.is_visible():
-                            type_option.click()
-                            print("  已选择：图文（备用选择器）")
-                            page.wait_for_timeout(1000)
-                except Exception as e:
-                    print(f"  选择图文失败: {e}")
-
-                # 确认筛选（如果有确认按钮）
-                try:
-                    confirm_btn = page.query_selector("button:has-text('确定'), button:has-text('确认'), .confirm-btn, [class*='confirm']")
-                    if confirm_btn:
-                        confirm_btn.click()
-                        print("  已确认筛选条件")
-                        page.wait_for_timeout(2000)
-                except:
-                    pass
-
-                page.screenshot(path="screenshot2_filter.png")
-                print("  筛选条件设置完成")
-
-        except Exception as e:
-            print(f"  筛选操作失败（将继续爬取）: {e}")
-            page.screenshot(path="screenshot2_error.png")
-
-        page.wait_for_timeout(2000)
-        page.screenshot(path = r'D:\temp\2.jpg')
-        # ========== 筛选操作结束 ==========
-
         print(f"开始滚动加载数据 (共{scroll_times}次)...")
         for i in range(scroll_times):
             page.mouse.wheel(0, 3000)
@@ -356,7 +229,7 @@ def search_xiaohongshu(
             print(f"  滚动第 {i+1} 次...")
 
         print("解析数据...")
-        page.screenshot(path=r'D:\temp\3.jpg')
+
         cards = page.query_selector_all(".note-item")
 
         results = []
@@ -619,8 +492,7 @@ DEFAULT_MAX_DELAY = 4
 DEFAULT_PAGE_LOAD_WAIT = 3
 DEFAULT_SAVE_SCREENSHOTS = True
 DEFAULT_SAVE_JSON = True
-DEFAULT_HEADLESS = False
-
+DEFAULT_HEADLESS = True
 # ==================== 默认参数结束 ====================
 
 

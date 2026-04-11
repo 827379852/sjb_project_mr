@@ -12,7 +12,6 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 const toolbarButtons = [
-  { id: 'personas', label: '👥 生成人设' },
   { id: 'scout', label: '🌐 社媒侦察' },
   { id: 'interview', label: '🎤 开始访谈' },
   { id: 'report', label: '📊 生成报告' }
@@ -118,9 +117,6 @@ defineExpose({
   <div class="input-area">
     <div class="input-wrapper">
       <div class="input-toolbar">
-        <button class="toolbar-btn" @click="triggerFileUpload">
-          📎 上传附件
-        </button>
         <button
           v-for="btn in toolbarButtons"
           :key="btn.id"

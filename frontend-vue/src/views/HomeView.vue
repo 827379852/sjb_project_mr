@@ -28,38 +28,42 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-// 用 WeakMap 存储是否已绑定折叠事件（避免重复绑定）
-const _scoutBound = new WeakMap<Element, boolean>()
-const _postBound = new WeakMap<Element, boolean>()
-
-function applyScoutToggle(el: Element) {
+// 全局事件委托函数 - 统一处理所有折叠/展开点击事件
+function setupScoutEventDelegation(container: Element) {
   // 人设头部折叠/展开
-  el.querySelectorAll('.persona-scout-header').forEach(header => {
-    if (_scoutBound.get(header)) return
-    _scoutBound.set(header, true)
-    const body = header.nextElementSibling
-    const icon = header.querySelector('.toggle-icon')
-    const hint = header.querySelector('.expand-hint')
-    header.addEventListener('click', () => {
-      const isOpen = (body as HTMLElement)?.style.display !== 'none'
-      ;(body as HTMLElement).style.display = isOpen ? 'none' : 'block'
-      if (icon) (icon as HTMLElement).style.transform = isOpen ? '' : 'rotate(90deg)'
-      if (hint) (hint as HTMLElement).textContent = isOpen ? '点击展开详情' : '点击收起'
-    })
-  })
-  // 帖子折叠/展开
-  el.querySelectorAll('.post-toggle').forEach(toggle => {
-    if (_postBound.get(toggle)) return
-    _postBound.set(toggle, true)
-    const toggleBody = toggle.querySelector('.post-toggle-body')
-    const toggleIcon = toggle.querySelector('.post-toggle-icon')
-    toggle.addEventListener('click', () => {
-      const isOpen = (toggleBody as HTMLElement)?.style.display !== 'none'
-      ;(toggleBody as HTMLElement).style.display = isOpen ? 'none' : 'block'
-      if (toggleIcon) (toggleIcon as HTMLElement).style.transform = isOpen ? '' : 'rotate(90deg)'
-    })
+  container.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    const header = target.closest('.persona-scout-header') as HTMLElement | null
+    if (header) {
+      const body = header.nextElementSibling as HTMLElement | null
+      const icon = header.querySelector('.toggle-icon') as HTMLElement | null
+      const hint = header.querySelector('.expand-hint') as HTMLElement | null
+      if (body) {
+        const isOpen = body.style.display !== 'none'
+        body.style.display = isOpen ? 'none' : 'block'
+        if (icon) icon.style.transform = isOpen ? '' : 'rotate(90deg)'
+        if (hint) hint.textContent = isOpen ? '点击展开详情' : '点击收起'
+      }
+      e.stopPropagation()
+    }
+
+    // 帖子折叠/展开
+    const postToggle = target.closest('.post-toggle') as HTMLElement | null
+    if (postToggle) {
+      const toggleBody = postToggle.querySelector('.post-toggle-body') as HTMLElement | null
+      const toggleIcon = postToggle.querySelector('.post-toggle-icon') as HTMLElement | null
+      if (toggleBody) {
+        const isOpen = toggleBody.style.display !== 'none'
+        toggleBody.style.display = isOpen ? 'none' : 'block'
+        if (toggleIcon) toggleIcon.style.transform = isOpen ? '' : 'rotate(90deg)'
+      }
+      e.stopPropagation()
+    }
   })
 }
+
+// 初始化事件委托的标记
+let eventDelegationInitialized = false
 
 // 绑定全局方法供按钮 onclick 调用
 onMounted(() => {
@@ -69,14 +73,20 @@ onMounted(() => {
   ;(window as any).triggerAutoInterview = triggerAutoInterview
   ;(window as any).triggerReport = triggerReport
   ;(window as any).editStudy = () => {
-    inputText.value = researchStore.designContent || ''
     if (inputAreaRef.value) {
-      ;(inputAreaRef.value as any).setInputText(inputText.value)
+      ;(inputAreaRef.value as any).setInputText('调整研究方向为：')
     }
   }
   // 暴露恢复历史消息函数，供侧边栏 selectStudy 后调用
   ;(window as any).restoreMessagesFromStore = restoreMessagesFromStore
   ;(window as any).clearMessages = () => { messages.value = [] }
+
+  // 初始化事件委托
+  if (!eventDelegationInitialized) {
+    setupScoutEventDelegation(document.body)
+    eventDelegationInitialized = true
+    console.log('[HomeView] 事件委托已初始化')
+  }
 })
 
 onUnmounted(() => {
@@ -393,10 +403,7 @@ function restoreMessagesFromStore() {
 
   console.log('restored messages:', messages.value.length)
 
-  // 为侦察结果注入事件绑定（历史恢复 + 实时 SSE 均通过这里生效）
-  nextTick(() => {
-    applyScoutToggle(document.body)
-  })
+  // 事件委托已在 onMounted 中全局初始化，无需再次调用
 }
 
 // 标记是否正在创建新任务（用于防止 watch 清空正在显示的消息）
@@ -842,17 +849,7 @@ async function triggerScout() {
       </div>
       <div class="persona-scout-body" data-persona-id="${pId}" style="display:none;padding-left:8px"></div>
     `
-    // 点击头部折叠/展开
-    const header = block.querySelector('.persona-scout-header') as HTMLElement
-    const body = block.querySelector('.persona-scout-body') as HTMLElement
-    const icon = block.querySelector('.toggle-icon') as HTMLElement
-    const hint = block.querySelector('.expand-hint') as HTMLElement
-    header.addEventListener('click', () => {
-      const isOpen = body.style.display !== 'none'
-      body.style.display = isOpen ? 'none' : 'block'
-      icon.style.transform = isOpen ? '' : 'rotate(90deg)'
-      if (hint) hint.textContent = isOpen ? '点击展开详情' : '点击收起'
-    })
+    // 注意：不再直接绑定事件，统一通过 setupScoutEventDelegation 事件委托处理
     return block
   }
 
@@ -902,15 +899,7 @@ async function triggerScout() {
           </div>
         </div>
       `
-      // 帖子展开/折叠
-      const toggle = div.querySelector('.post-toggle') as HTMLElement
-      const toggleBody = div.querySelector('.post-toggle-body') as HTMLElement
-      const toggleIcon = div.querySelector('.post-toggle-icon') as HTMLElement
-      toggle.addEventListener('click', () => {
-        const isOpen = toggleBody.style.display !== 'none'
-        toggleBody.style.display = isOpen ? 'none' : 'block'
-        toggleIcon.style.transform = isOpen ? '' : 'rotate(90deg)'
-      })
+      // 注意：不再直接绑定事件，统一通过 setupScoutEventDelegation 事件委托处理
     } else {
       // 模拟帖子（不折叠，展示完整）
       const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
@@ -1008,6 +997,10 @@ async function triggerScout() {
               const block = postsContainer.querySelector(`.persona-scout-block[data-persona-id="${personaId}"]`) as HTMLElement
               if (block) {
                 addPostToBlock(block, post)
+                // 立即为新添加的帖子绑定折叠/展开事件，并滚动到底部
+                nextTick(() => {
+                  scrollToBottom()
+                })
               }
             }
           } else if (event.type === 'persona_insights') {
@@ -1100,7 +1093,6 @@ async function triggerScout() {
     // 自动进入下一阶段：自动深度访谈
     await nextTick()
     scrollToBottom()
-    applyScoutToggle(document.body)
     researchStore.setStreaming(false)
     // 自动触发访谈
     await triggerAutoInterview()
@@ -1536,7 +1528,7 @@ function exportReport() {
 }
 
 function editStudy() {
-  inputAreaRef.value?.setInputText('请调整研究方向：')
+  inputAreaRef.value?.setInputText('调整研究方向为：')
 }
 
 // 暴露全局函数供 onclick 调用

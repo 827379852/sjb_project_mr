@@ -12,7 +12,7 @@ from app.core.database import Base
 # 新用户注册赠送的积分
 DEFAULT_CREDITS = 100
 # 每次任务消耗的积分
-TASK_COST_CREDITS = 10
+TASK_COST_CREDITS = 100
 
 
 def generate_api_key() -> str:

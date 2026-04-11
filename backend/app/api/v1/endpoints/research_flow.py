@@ -37,7 +37,7 @@ router = APIRouter(prefix="/research-flow", tags=["研究闭环"])
 
 # ── 小红书爬虫并发控制（最多同时运行 1 个实例）────────────────────
 # 用信号量限制，避免多个用户同时触发爬虫互相干扰
-_xhs_semaphore = asyncio.Semaphore(1)
+_xhs_semaphore = asyncio.Semaphore(6)
 
 
 # ── 小红书爬虫异步封装（进程池版，解决 Windows 线程中 playwright 子进程问题）──
