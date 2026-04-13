@@ -403,6 +403,14 @@ async def adjust_design(
                 if study_to_update:
                     study_to_update.design_content = full_content
                     study_to_update.current_phase = "post-design"
+                    # 追加调整历史记录
+                    if study_to_update.adjustment_history is None:
+                        study_to_update.adjustment_history = []
+                    study_to_update.adjustment_history.append({
+                        "request": request.adjustment,
+                        "result": full_content,
+                        "timestamp": datetime.now().isoformat()
+                    })
                     await new_db.commit()
 
         yield f"data: {json.dumps({'type': 'step', 'step': 'adjust_design', 'status': 'done', 'study_id': request.study_id}, ensure_ascii=False)}\n\n"

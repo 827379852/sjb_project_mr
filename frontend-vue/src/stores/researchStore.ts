@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus, ScoutResult } from '@/types'
+import type { Persona, Phase, StepProgress, InterviewMessage, Attachment, StepStatus, ScoutResult, AdjustmentHistoryItem } from '@/types'
 
 // ========== 废弃全局 localStorage 存储 ==========
 // 问题：全局存储会导致不同研究的数据混淆
@@ -17,6 +17,7 @@ export const useResearchStore = defineStore('research', () => {
   const userRequest = ref('')
   const designContent = ref('')
   const previousDesignContent = ref('')  // 调整前的设计框架
+  const adjustmentHistory = ref<AdjustmentHistoryItem[]>([])  // 调整历史记录
   const personas = ref<Persona[]>([])
   const selectedPersona = ref<Persona | null>(null)
   const interviewHistory = ref<Record<string, InterviewMessage[]>>({})
@@ -135,6 +136,14 @@ export const useResearchStore = defineStore('research', () => {
     previousDesignContent.value = content
   }
 
+  function setAdjustmentHistory(history: AdjustmentHistoryItem[]) {
+    adjustmentHistory.value = history
+  }
+
+  function addAdjustmentHistory(item: AdjustmentHistoryItem) {
+    adjustmentHistory.value.push(item)
+  }
+
   function setPersonas(list: Persona[]) {
     personas.value = list
   }
@@ -166,6 +175,7 @@ export const useResearchStore = defineStore('research', () => {
     userRequest.value = ''
     designContent.value = ''
     previousDesignContent.value = ''
+    adjustmentHistory.value = []
     personas.value = []
     selectedPersona.value = null
     interviewHistory.value = {}
@@ -191,6 +201,7 @@ export const useResearchStore = defineStore('research', () => {
     userRequest,
     designContent,
     previousDesignContent,
+    adjustmentHistory,
     personas,
     selectedPersona,
     interviewHistory,
@@ -209,6 +220,8 @@ export const useResearchStore = defineStore('research', () => {
     setUserRequest,
     setDesignContent,
     setPreviousDesignContent,
+    setAdjustmentHistory,
+    addAdjustmentHistory,
     setPersonas,
     setInterviewHistory,
     setScoutResults,

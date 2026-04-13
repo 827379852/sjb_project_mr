@@ -47,6 +47,13 @@ export interface ReportRecord {
   format: string
 }
 
+// 调整历史记录
+export interface AdjustmentHistoryItem {
+  request: string
+  result: string
+  timestamp: string
+}
+
 // 研究详情
 export interface StudyDetail {
   id: string
@@ -55,6 +62,7 @@ export interface StudyDetail {
   user_request: string
   design_content: string
   previous_design_content: string  // 调整前的设计框架
+  adjustment_history: AdjustmentHistoryItem[]  // 调整历史记录
   status: string
   current_phase: string
   created_at: string

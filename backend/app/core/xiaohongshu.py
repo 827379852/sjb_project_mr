@@ -177,20 +177,20 @@ def search_xiaohongshu(
             locale='zh-CN',
         )
         cookies = [
-    {"name": "abRequestId", "value": "dab0aa40-3aec-51f4-8a0c-f475488d2c8c", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "ets", "value": "1775634811523", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "abRequestId", "value": "f58b560d-22ea-5e2c-bf92-9c6e5db3ca46", "domain": ".xiaohongshu.com", "path": "/"},
     {"name": "xsecappid", "value": "xhs-pc-web", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "a1", "value": "19d6c150acdaqghpz80m9zaqq9tobheg8fwwbie7450000286325", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "webId", "value": "17c697cb144a0776b13b8b96bb759099", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "gid", "value": "yjfKSy2yj2Y4yjfKSy280i3dSf0AkxUuY86jEW4u0AAj9E28lDxdkD888JYKqJ28JiSK0KWW", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "web_session", "value": "0400698cc4323f561240e041e33b4bc7cb83b4", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "id_token", "value": "VjEAAGV8icCEyy9jCO25RtP9Vofh0E2WQtx9Drb4enNT1deI3RQlWgiyy2yVotN0/07RhjUwLCPOGRpWo2LlHDF7CqCQsekWtQLI7hNzOpsuqV+HBDRiPDyvpPuFUmS5ArjF7+L/", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "unread", "value": "{\"ub\":\"69d788e2000000002301e4ed\",\"ue\":\"69d60986000000001d01b649\",\"uc\":28}", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "acw_tc", "value": "0ad5865817757967658742590e529d193fe53d3f1ec1a2851473e022668259", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "websectiga", "value": "2a3d3ea002e7d92b5c9743590ebd24010cf3710ff3af8029153751e41a6af4a3", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "sec_poison_id", "value": "fdba7ed2-78c2-4fae-9b98-a871a47d1dc1", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "a1", "value": "19ae2fbf171k3nv4ze3m2e3cvdlnkemf3syw4a9km50000276270", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "webId", "value": "bf59a9a54ed1854618e0b154e05a4019", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "gid", "value": "yj0dJiDifyq8yj0dJiDiyM0jWyTqIh4udq6JvT6dqShf1E28ITd6i4888JWKJW88024i0Wqq", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "ets", "value": "1775547198708", "domain": ".xiaohongshu.com", "path": "/"},
     {"name": "webBuild", "value": "6.5.1", "domain": ".xiaohongshu.com", "path": "/"},
-    {"name": "loadts", "value": "1775798074261", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "web_session", "value": "0400698cc4323f56124001b8e93b4b28c6f6e5", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "id_token", "value": "VjEAAGXoBgz9gFEV2Ut0up4xuhtlSi4L/Kk9gZSgp7TLgcKHYUUC8V+RZe2E2O/Vi8W5ZUfeUJQ4HB89Bsbwvyv4hi8Dap/UuQl8PjxDf7eHxjWl4G7Eoj8dJ5rv+J+RYDw/0QVU", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "unread", "value": "{\"ub\":\"69cc7183000000001b002257\",\"ue\":\"69dcb1fd000000001a02b9ea\",\"uc\":25}", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "acw_tc", "value": "0a50855a17760907460498275ebafb43641dad0a7748279cc1b2dda6741802", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "websectiga", "value": "9730ffafd96f2d09dc024760e253af6ab1feb0002827740b95a255ddf6847fc8", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "sec_poison_id", "value": "78a7aa74-2faf-4fc1-9075-8ab3d27ea816", "domain": ".xiaohongshu.com", "path": "/"},
+    {"name": "loadts", "value": "1776092167782", "domain": ".xiaohongshu.com", "path": "/"}
 ]
         context.add_cookies(cookies)
 

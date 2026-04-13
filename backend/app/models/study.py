@@ -22,6 +22,7 @@ class Study(Base):
     user_request: Mapped[str] = mapped_column(Text, default="")  # 用户输入的研究需求
     design_content: Mapped[str] = mapped_column(Text, default="")  # LLM 生成的设计框架
     previous_design_content: Mapped[str] = mapped_column(Text, default="")  # 调整前的设计框架（用于对比）
+    adjustment_history: Mapped[List] = mapped_column(JSON, default=list)  # 调整历史记录 [{"request": "...", "result": "...", "timestamp": "..."}]
 
     # 状态
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_progress | completed | failed | archived

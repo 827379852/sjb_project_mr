@@ -79,6 +79,13 @@ class ReportOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AdjustmentHistoryItem(BaseModel):
+    """调整历史记录项"""
+    request: str
+    result: str
+    timestamp: str
+
+
 class StudyDetailOut(BaseModel):
     """研究详情（包含关联数据）"""
     id: str
@@ -87,6 +94,7 @@ class StudyDetailOut(BaseModel):
     user_request: str
     design_content: str
     previous_design_content: str = ""
+    adjustment_history: List[AdjustmentHistoryItem] = Field(default_factory=list)
     status: str
     current_phase: str
     created_at: datetime

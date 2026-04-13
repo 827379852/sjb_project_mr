@@ -31,7 +31,16 @@ interface ComponentItem {
 const messages = ref<Message[]>([])
 type StepStatus = 'pending' | 'running' | 'done' | 'error'
 
-const stepCards = ref<Map<string, { title: string; desc: string; status: StepStatus; content: string }>>(new Map())
+// 改用数组存储步骤卡片，支持多个独立的研究设计
+interface StepCardItem {
+  id: string
+  title: string
+  desc: string
+  status: StepStatus
+  content: string
+}
+
+const stepCards = ref<StepCardItem[]>([])
 
 function scrollToBottom() {
   nextTick(() => {
@@ -53,12 +62,12 @@ function addUserMsg(text: string) {
 }
 
 function addStepCard(id: string, title: string, desc: string, status: StepStatus = 'running') {
-  stepCards.value.set(id, { title, desc, status, content: '' })
+  stepCards.value.push({ id, title, desc, status, content: '' })
   scrollToBottom()
 }
 
-function updateStepCard(id: string, updates: Partial<{ title: string; desc: string; status: string; content: string }>) {
-  const card = stepCards.value.get(id)
+function updateStepCard(id: string, updates: Partial<{ title: string; desc: string; status: StepStatus; content: string }>) {
+  const card = stepCards.value.find(c => c.id === id)
   if (card) {
     Object.assign(card, updates)
   }
@@ -483,7 +492,7 @@ function handleConfirmAction(action: string) {
       triggerReport()
       break
     case 'editStudy':
-      // TODO: 实现编辑研究
+      editStudy()
       break
     case 'exportReport':
       // 由 topbar 处理
@@ -498,6 +507,43 @@ function handleConfirmAction(action: string) {
       // TODO: 显示访谈选择器
       break
   }
+}
+
+// 调整研究方向 - 清空旧数据，准备接受新的研究需求
+function editStudy() {
+  // 保存当前设计内容作为参考
+  researchStore.setPreviousDesignContent(researchStore.designContent)
+
+  // 清空旧的人设和步骤进度
+  researchStore.setPersonas([])
+  researchStore.setSelectedPersona(null)
+  researchStore.setInterviewHistory({})
+  researchStore.setReportContent('')
+
+  // 重置步骤进度但保持 studyId
+  researchStore.updateStepProgress('personas', 'pending')
+  researchStore.updateStepProgress('scout', 'pending')
+  researchStore.updateStepProgress('interview', 'pending')
+  researchStore.updateStepProgress('report', 'pending')
+
+  // 设置阶段为可以重新设计
+  researchStore.setPhase('idle')
+
+  // 添加用户消息提示
+  messages.value.push({
+    id: `user-${Date.now()}`,
+    type: 'user',
+    content: '我想调整研究方向'
+  })
+
+  // 添加 AI 回复，引导用户输入
+  messages.value.push({
+    id: `agent-${Date.now()}`,
+    type: 'agent',
+    content: '好的，请告诉我您想如何调整研究方向？您可以描述新的研究目标，或基于之前的框架提出修改意见。'
+  })
+
+  scrollToBottom()
 }
 
 function useExample(text: string) {
@@ -535,17 +581,17 @@ defineExpose({
       </template>
 
       <!-- 步骤卡片 -->
-      <AgentMessage v-if="stepCards.size > 0">
-        <template v-for="[id, card] in stepCards" :key="id">
+      <template v-for="card in stepCards" :key="card.id">
+        <AgentMessage>
           <StepCard
-            :id="id"
+            :id="card.id"
             :title="card.title"
             :desc="card.desc"
             :status="card.status"
             :content="card.content"
           />
-        </template>
-      </AgentMessage>
+        </AgentMessage>
+      </template>
 
       <!-- 人设网格 -->
       <AgentMessage v-if="researchStore.personas.length > 0">

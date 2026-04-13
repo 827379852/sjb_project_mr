@@ -167,10 +167,6 @@ function restoreMessagesFromStore() {
     const designId = 'design-restored'
     // 只有 post-design 阶段显示下一步按钮（用户可以在此调整）
     const showDesignFooter = researchStore.phase === 'post-design'
-    // 如果有调整前的框架，显示对比；否则显示当前框架
-    const displayContent = researchStore.previousDesignContent
-      ? buildDesignComparisonHtml(researchStore.previousDesignContent, researchStore.designContent)
-      : researchStore.designContent
     messages.value.push({
       id: `design-content`,
       type: 'stepCard',
@@ -178,9 +174,9 @@ function restoreMessagesFromStore() {
       stepData: {
         id: designId,
         title: '🎯 研究框架设计',
-        desc: researchStore.previousDesignContent ? '已调整' : '已完成',
+        desc: '已完成',
         status: 'done',
-        content: displayContent,
+        content: researchStore.designContent,
         footer: showDesignFooter ? `
           <div class="confirm-block">
             <div class="confirm-question">框架已生成 ✓ 接下来要怎么做？</div>
@@ -193,6 +189,72 @@ function restoreMessagesFromStore() {
       }
     })
     uiStore.expandStep(designId)
+  }
+
+  // 恢复调整历史（每次调整显示为：用户消息 + AI 回复卡片）
+  if (researchStore.adjustmentHistory && researchStore.adjustmentHistory.length > 0) {
+    researchStore.adjustmentHistory.forEach((adjustment, index) => {
+      // 用户调整请求
+      messages.value.push({
+        id: `user-adjust-${index}`,
+        type: 'user',
+        content: adjustment.request
+      })
+      // AI 调整结果
+      const adjustCardId = `adjust-${index}-${Date.now()}`
+      messages.value.push({
+        id: adjustCardId,
+        type: 'stepCard',
+        content: '',
+        stepData: {
+          id: adjustCardId,
+          title: '🔄 调整研究框架',
+          desc: '已调整',
+          status: 'done',
+          content: adjustment.result,
+          footer: index === researchStore.adjustmentHistory.length - 1 && researchStore.phase === 'post-design' ? `
+            <div class="confirm-block">
+              <div class="confirm-question">框架已更新 ✓ 接下来要怎么做？</div>
+              <div class="confirm-options">
+                <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
+                <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 继续调整方向</button>
+              </div>
+            </div>
+          ` : ''
+        }
+      })
+      uiStore.expandStep(adjustCardId)
+    })
+  } else if (researchStore.previousDesignContent && researchStore.designContent !== researchStore.previousDesignContent) {
+    // 兼容旧数据：如果有 previousDesignContent 但没有 adjustmentHistory，显示一次调整
+    messages.value.push({
+      id: `user-adjust-legacy`,
+      type: 'user',
+      content: '调整研究方向'
+    })
+    const adjustCardId = `adjust-legacy-${Date.now()}`
+    messages.value.push({
+      id: adjustCardId,
+      type: 'stepCard',
+      content: '',
+      stepData: {
+        id: adjustCardId,
+        title: '🔄 调整研究框架',
+        desc: '已调整',
+        status: 'done',
+        content: researchStore.designContent,
+        footer: researchStore.phase === 'post-design' ? `
+          <div class="confirm-block">
+            <div class="confirm-question">框架已更新 ✓ 接下来要怎么做？</div>
+            <div class="confirm-options">
+              <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
+              <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 继续调整方向</button>
+            </div>
+          </div>
+        ` : ''
+      }
+    })
+    uiStore.expandStep(adjustCardId)
   }
 
   // 恢复人设卡片（如果有）- 不显示后续引导按钮
@@ -510,28 +572,20 @@ async function handleSend(text: string) {
   }
 }
 
-/** 调整研究方向 - 调用新接口更新现有研究框架 */
+/** 调整研究方向 - 创建新的独立消息，类似 ChatGPT 一问一答格式 */
 async function adjustDesign(adjustmentRequest: string) {
   if (!researchStore.studyId) {
     console.error('[adjustDesign] 没有 studyId，无法调整')
     return
   }
 
-  // 找到现有的设计卡片
-  const designCard = messages.value.find(m => m.type === 'stepCard' && m.stepData?.id?.includes('design'))
-  if (!designCard?.stepData) {
-    console.error('[adjustDesign] 找不到设计卡片')
-    return
-  }
+  // 创建新的步骤卡片（而不是更新旧的）
+  // 注意：用户消息已在 handleSend 中通过 addUserMsg 添加
+  addStepCard(`step-adjust-${Date.now()}`, '🔄 调整研究框架', '正在根据您的要求调整...', 'running')
 
-  // 保存旧设计内容用于对比
+  // 保存旧设计内容
   const oldDesign = researchStore.designContent
   researchStore.setPreviousDesignContent(oldDesign)
-
-  // 设置卡片状态为运行中
-  designCard.stepData.status = 'running'
-  designCard.stepData.desc = '正在调整...'
-  designCard.stepData.footer = ''
 
   researchStore.setStreaming(true)
   researchStore.setPhase('post-design')
@@ -559,16 +613,15 @@ async function adjustDesign(adjustmentRequest: string) {
         router.push('/login')
         return
       }
-      designCard.stepData.status = 'error'
-      designCard.stepData.desc = '调整失败'
+      updateStepCardStatus('error')
+      updateStepCardContent('调整失败，请重试')
       researchStore.setStreaming(false)
       return
     }
 
     const reader = res.body?.getReader()
     if (!reader) {
-      designCard.stepData.status = 'error'
-      designCard.stepData.desc = '调整失败'
+      updateStepCardStatus('error')
       researchStore.setStreaming(false)
       return
     }
@@ -589,8 +642,8 @@ async function adjustDesign(adjustmentRequest: string) {
           const event = JSON.parse(eventStr) as SSEEvent
           if (event.type === 'content') {
             fullContent += event.delta as string
-            // 显示调整后的新框架（同时显示旧框架用于对比）
-            designCard.stepData.content = buildDesignComparisonHtml(oldDesign, fullContent)
+            // 直接显示新框架内容
+            updateStepCardContent(fullContent)
             scrollToBottom()
           }
         } catch { /* 跳过损坏帧 */ }
@@ -615,20 +668,25 @@ async function adjustDesign(adjustmentRequest: string) {
 
     // 更新研究设计内容
     researchStore.setDesignContent(fullContent)
-    designCard.stepData.status = 'done'
-    designCard.stepData.desc = '已调整'
+    updateStepCardStatus('done')
 
-    // 恢复按钮（显示调整后的新框架，同时展开旧框架供对比）
-    designCard.stepData.content = buildDesignComparisonHtml(oldDesign, fullContent)
-    designCard.stepData.footer = `
+    // 将调整历史添加到 store（这样切换研究后可以恢复）
+    researchStore.addAdjustmentHistory({
+      request: adjustmentRequest,
+      result: fullContent,
+      timestamp: new Date().toISOString()
+    })
+
+    // 设置下一步按钮
+    updateStepCardFooter(`
       <div class="confirm-block">
         <div class="confirm-question">框架已更新 ✓ 接下来要怎么做？</div>
         <div class="confirm-options">
           <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
-          <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 调整研究方向</button>
+          <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 继续调整方向</button>
         </div>
       </div>
-    `
+    `)
     scrollToBottom()
   } catch (e: any) {
     if (e.name === 'AbortError') {
@@ -636,38 +694,10 @@ async function adjustDesign(adjustmentRequest: string) {
       return
     }
     console.error('adjustDesign error:', e)
-    designCard.stepData.status = 'error'
-    designCard.stepData.desc = '调整失败'
+    updateStepCardStatus('error')
   }
 
   researchStore.setStreaming(false)
-}
-
-/** 构建调整前后对比的 HTML */
-function buildDesignComparisonHtml(oldDesign: string, newDesign: string): string {
-  const oldEsc = escapeHtml(oldDesign || '（原始框架内容）')
-  const newEsc = escapeHtml(newDesign)
-
-  return `
-    <div class="design-comparison">
-      <div class="comparison-notice" style="margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:6px;border-left:3px solid var(--accent);font-size:12px;color:var(--text-dim)">
-        📝 已对比原框架进行调整，下方为调整后结果：
-      </div>
-      <div class="new-design" style="background:var(--surface2);border-radius:8px;padding:16px;border:1px solid var(--border)">
-        <div style="font-size:11px;color:var(--accent);margin-bottom:8px;font-weight:600">✨ 调整后</div>
-        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text)">${newEsc}</div>
-      </div>
-      <details style="margin-top:12px">
-        <summary style="cursor:pointer;font-size:12px;color:var(--text-dim);padding:4px 0;user-select:none;list-style:none">
-          ▶ 点击查看调整前对比
-        </summary>
-        <div style="margin-top:10px;background:var(--surface3);border-radius:8px;padding:16px;border:1px solid var(--border-dim);opacity:0.85">
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;font-weight:600">◀ 调整前</div>
-          <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text-secondary)">${oldEsc}</div>
-        </div>
-      </details>
-    </div>
-  `
 }
 
 /** 从单帧原始文本提取 data: 负载（支持多行 data:） */

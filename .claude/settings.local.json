@@ -20,7 +20,8 @@
       "Bash(zip -r market-research-sdk.zip market-research-sdk/)",
       "Bash(powershell -Command \"Compress-Archive -Path 'market-research-sdk/*' -DestinationPath 'market-research-sdk.zip' -Force\")",
       "WebSearch",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(ls:*)"
     ]
   }
 }

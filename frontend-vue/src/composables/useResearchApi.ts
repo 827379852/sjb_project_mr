@@ -111,6 +111,8 @@ export function useResearchApi() {
     store.setDesignContent(study.design_content || '')
     // 加载调整前的设计框架（如果有）
     store.setPreviousDesignContent(study.previous_design_content || '')
+    // 加载调整历史记录
+    store.setAdjustmentHistory(study.adjustment_history || [])
 
     // 恢复人设
     const personaList: any[] = study.personas.map(p => ({
