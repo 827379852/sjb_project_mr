@@ -100,7 +100,7 @@ export function useResearchApi() {
       occupation: p.occupation,
       city: p.city,
       background: p.background,
-      ...(p.persona_data || {})
+      ...((p as any).persona_data || {})
     }))
     store.setPersonas(personaList)
 

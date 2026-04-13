@@ -1,15 +1,17 @@
 """
 管理员 API 端点
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.response import ApiResponse
 from app.core.security import get_password_hash
 from app.models.user import User, DEFAULT_CREDITS, TASK_COST_CREDITS
+from app.models.credit_log import CreditLog
 from app.schemas.user import UserOut, UserUpdate
+from app.schemas.credit_log import CreditLogOut, CreditLogListResponse
 from app.dependencies.auth import get_current_superuser
 
 router = APIRouter(prefix="/admin", tags=["管理员"])
@@ -226,4 +228,66 @@ async def get_stats(
         "total_credits": total_credits,
         "default_credits": DEFAULT_CREDITS,
         "task_cost_credits": TASK_COST_CREDITS,
+    })
+
+
+@router.get("/credit-logs", response_model=ApiResponse)
+async def list_credit_logs(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    user_id: str | None = Query(None, description="用户ID筛选"),
+    log_type: str | None = Query(None, description="日志类型筛选"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    """
+    获取积分记录列表（仅超级管理员）
+    """
+    # 构建查询条件
+    query = select(CreditLog)
+    count_query = select(func.count(CreditLog.id))
+
+    if user_id:
+        query = query.where(CreditLog.user_id == user_id)
+        count_query = count_query.where(CreditLog.user_id == user_id)
+
+    if log_type:
+        query = query.where(CreditLog.log_type == log_type)
+        count_query = count_query.where(CreditLog.log_type == log_type)
+
+    # 计算总数
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # 分页查询
+    offset = (page - 1) * page_size
+    result = await db.execute(
+        query.order_by(desc(CreditLog.created_at)).offset(offset).limit(page_size)
+    )
+    logs = result.scalars().all()
+
+    # 获取用户信息
+    items = []
+    for log in logs:
+        user_result = await db.execute(select(User).where(User.id == log.user_id))
+        user = user_result.scalar_one_or_none()
+        log_dict = {
+            "id": log.id,
+            "user_id": log.user_id,
+            "user_email": user.email if user else None,
+            "user_name": user.name if user else None,
+            "amount": log.amount,
+            "balance_after": log.balance_after,
+            "log_type": log.log_type,
+            "description": log.description,
+            "related_study_id": log.related_study_id,
+            "created_at": log.created_at,
+        }
+        items.append(CreditLogOut(**log_dict))
+
+    return ApiResponse.ok({
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     })

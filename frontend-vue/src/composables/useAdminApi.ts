@@ -30,6 +30,26 @@ interface StatsResponse {
   task_cost_credits: number
 }
 
+export interface CreditLog {
+  id: string
+  user_id: string
+  user_email: string | null
+  user_name: string | null
+  amount: number
+  balance_after: number
+  log_type: string
+  description: string | null
+  related_study_id: string | null
+  created_at: string
+}
+
+interface CreditLogListResponse {
+  items: CreditLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const authStore = useAuthStore()
   const token = authStore.token
@@ -96,6 +116,19 @@ export function useAdminApi() {
     // 获取统计
     async getStats(): Promise<StatsResponse> {
       return request<StatsResponse>(`${API_BASE}/stats`)
+    },
+
+    // 获取积分记录列表（超级管理员）
+    async listCreditLogs(
+      page: number = 1,
+      pageSize: number = 20,
+      userId?: string,
+      logType?: string
+    ): Promise<CreditLogListResponse> {
+      let url = `${API_BASE}/credit-logs?page=${page}&page_size=${pageSize}`
+      if (userId) url += `&user_id=${userId}`
+      if (logType) url += `&log_type=${logType}`
+      return request<CreditLogListResponse>(url)
     },
   }
 }

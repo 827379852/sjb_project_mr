@@ -1,15 +1,17 @@
 """
 认证 API 端点
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.response import ApiResponse
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.user import User, generate_api_key
+from app.models.credit_log import CreditLog
 from app.schemas.user import UserCreate, UserLogin, UserOut, Token
+from app.schemas.credit_log import CreditLogOut
 from app.dependencies.auth import get_current_active_user
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -112,4 +114,54 @@ async def reset_api_key(
     return ApiResponse.ok({
         "api_key": new_api_key,
         "message": "API Key 已重置，旧 Key 已失效"
+    })
+
+
+@router.get("/credit-logs", response_model=ApiResponse)
+async def get_my_credit_logs(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    获取当前用户的积分记录
+    """
+    # 构建查询条件
+    query = select(CreditLog).where(CreditLog.user_id == current_user.id)
+    count_query = select(func.count(CreditLog.id)).where(CreditLog.user_id == current_user.id)
+
+    # 计算总数
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    # 分页查询
+    offset = (page - 1) * page_size
+    result = await db.execute(
+        query.order_by(desc(CreditLog.created_at)).offset(offset).limit(page_size)
+    )
+    logs = result.scalars().all()
+
+    # 构建返回数据
+    items = []
+    for log in logs:
+        log_dict = {
+            "id": log.id,
+            "user_id": log.user_id,
+            "user_email": current_user.email,
+            "user_name": current_user.name,
+            "amount": log.amount,
+            "balance_after": log.balance_after,
+            "log_type": log.log_type,
+            "description": log.description,
+            "related_study_id": log.related_study_id,
+            "created_at": log.created_at,
+        }
+        items.append(CreditLogOut(**log_dict))
+
+    return ApiResponse.ok({
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     })

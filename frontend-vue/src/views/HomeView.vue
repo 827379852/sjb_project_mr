@@ -100,8 +100,9 @@ onUnmounted(() => {
   delete (window as any).clearMessages
 })
 
-// 用于编辑研究方法的变量
-const inputText = ref('')
+// 确认扣分弹窗
+const showCreditsConfirm = ref(false)
+const pendingAction = ref<string | null>(null)
 
 const API_BASE = window.location.hostname === 'localhost'
   ? 'http://localhost:8000/api/v1'
@@ -697,6 +698,29 @@ function buildPersonasGridHtml(): string {
 async function triggerPersonas() {
   if (!researchStore.studyId || researchStore.isStreaming) return
 
+  // 显示确认弹窗
+  showCreditsConfirm.value = true
+  pendingAction.value = 'personas'
+}
+
+async function confirmStartResearch() {
+  if (!pendingAction.value) return
+  showCreditsConfirm.value = false
+
+  const action = pendingAction.value
+  pendingAction.value = null
+
+  if (action === 'personas') {
+    await doTriggerPersonas()
+  }
+}
+
+function cancelStartResearch() {
+  showCreditsConfirm.value = false
+  pendingAction.value = null
+}
+
+async function doTriggerPersonas() {
   addStepCard(`step-personas-${Date.now()}`, '👥 开始市场调研', '正在构建初始用户画像...', 'running')
   researchStore.setStreaming(true)
   researchStore.setPhase('personas')
@@ -1639,10 +1663,122 @@ const statusIcons: Record<string, string> = {
       @trigger-interview="triggerAutoInterview"
       @trigger-report="triggerReport"
     />
+
+    <!-- 积分扣除确认弹窗 -->
+    <Teleport to="body">
+      <div v-if="showCreditsConfirm" class="credits-confirm-overlay" @click.self="cancelStartResearch">
+        <div class="credits-confirm-modal">
+          <div class="credits-confirm-icon">💎</div>
+          <h3 class="credits-confirm-title">确认开始市场调研？</h3>
+          <p class="credits-confirm-desc">此操作将扣除 <strong>100 积分</strong>，您的账户当前有 <strong>{{ authStore.credits }}</strong> 积分。</p>
+          <div class="credits-confirm-actions">
+            <button class="credits-confirm-btn cancel" @click="cancelStartResearch">取消</button>
+            <button class="credits-confirm-btn confirm" @click="confirmStartResearch">确认开始</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
     </main>
   </div>
 </template>
 
 <style scoped>
 /* 样式从原有 App.vue 继承 */
+
+/* 积分确认弹窗样式 */
+.credits-confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.credits-confirm-modal {
+  background: var(--surface1);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  width: 90%;
+  max-width: 400px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: modalFadeIn 0.2s ease;
+}
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.credits-confirm-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.credits-confirm-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.credits-confirm-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 24px;
+  line-height: 1.6;
+}
+
+.credits-confirm-desc strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.credits-confirm-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.credits-confirm-btn {
+  padding: 12px 32px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.credits-confirm-btn.cancel {
+  background: var(--surface2);
+  color: var(--text-secondary);
+}
+
+.credits-confirm-btn.cancel:hover {
+  background: var(--surface3);
+  color: var(--text);
+}
+
+.credits-confirm-btn.confirm {
+  background: var(--accent);
+  color: white;
+}
+
+.credits-confirm-btn.confirm:hover {
+  filter: brightness(1.1);
+}
 </style>

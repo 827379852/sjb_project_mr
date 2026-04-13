@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useResearchStore, useUIStore, useAuthStore } from '@/stores'
 import { useResearchApi } from '@/composables'
-import type { StudyListItem, StudyDetail } from '@/types'
+import type { StudyListItem } from '@/types'
 
 const router = useRouter()
 const researchStore = useResearchStore()
@@ -14,8 +14,13 @@ const { listStudies, getStudy, deleteStudy, loadStudy } = useResearchApi()
 const studies = ref<StudyListItem[]>([])
 const loading = ref(false)
 const showApiKeyModal = ref(false)
+const showCreditsLogModal = ref(false)
 const isResetting = ref(false)
 const copied = ref(false)
+const creditsLog = ref<any[]>([])
+const creditsLogLoading = ref(false)
+const creditsLogTotal = ref(0)
+const creditsLogPage = ref(1)
 
 // 是否已登录
 const isLoggedIn = computed(() => authStore.isAuthenticated)
@@ -159,6 +164,56 @@ async function resetApiKey() {
   }
 }
 
+// 积分记录相关
+async function openCreditsLogModal() {
+  showCreditsLogModal.value = true
+  await loadCreditsLog()
+}
+
+function closeCreditsLogModal() {
+  showCreditsLogModal.value = false
+}
+
+async function loadCreditsLog() {
+  creditsLogLoading.value = true
+  try {
+    const res = await fetch(`${API_BASE.value}/auth/credit-logs?page=${creditsLogPage.value}&page_size=10`, {
+      headers: {
+        'Authorization': `Bearer ${authStore.token}`
+      }
+    })
+    if (res.ok) {
+      const data = await res.json()
+      creditsLog.value = data.data.items || []
+      creditsLogTotal.value = data.data.total || 0
+    }
+  } catch (err) {
+    console.error('加载积分记录失败', err)
+  } finally {
+    creditsLogLoading.value = false
+  }
+}
+
+function getLogTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    deduct: '扣除',
+    refund: '返还',
+    reward: '奖励',
+    admin_adjust: '管理员调整'
+  }
+  return labels[type] || type
+}
+
+function formatLogDate(dateStr: string): string {
+  const date = new Date(dateStr)
+  return date.toLocaleString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 // 登录后加载研究列表
 onMounted(() => {
   if (isLoggedIn.value) {
@@ -218,11 +273,12 @@ onMounted(() => {
 
     <!-- 用户信息区域 - 固定在底部 -->
     <div class="sidebar-user">
-      <!-- 积分显示 -->
-      <div class="credits-display">
+      <!-- 积分显示 - 可点击查看积分记录 -->
+      <div class="credits-display" @click="openCreditsLogModal" style="cursor: pointer">
         <span class="credits-icon">💎</span>
         <span class="credits-label">剩余积分</span>
         <span class="credits-value">{{ authStore.credits }}</span>
+        <span class="credits-arrow">›</span>
       </div>
 
       <div class="user-card">
@@ -277,6 +333,43 @@ onMounted(() => {
             <button class="sidebar-modal-btn sidebar-modal-btn-danger" @click="resetApiKey" :disabled="isResetting">
               {{ isResetting ? '重置中...' : '重置 Key' }}
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 积分记录弹窗 -->
+    <Teleport to="body">
+      <div v-if="showCreditsLogModal" class="sidebar-modal-overlay" @click.self="closeCreditsLogModal">
+        <div class="sidebar-modal-content credits-log-modal">
+          <div class="sidebar-modal-header">
+            <h3>💎 积分使用记录</h3>
+            <button class="sidebar-modal-close" @click="closeCreditsLogModal">×</button>
+          </div>
+          <div class="sidebar-modal-body">
+            <div v-if="creditsLogLoading" class="credits-log-loading">加载中...</div>
+            <div v-else-if="creditsLog.length === 0" class="credits-log-empty">暂无积分记录</div>
+            <div v-else class="credits-log-list">
+              <div v-for="log in creditsLog" :key="log.id" class="credits-log-item">
+                <div class="log-left">
+                  <span :class="['log-type-badge', log.log_type]">{{ getLogTypeLabel(log.log_type) }}</span>
+                  <span class="log-desc">{{ log.description || '-' }}</span>
+                </div>
+                <div class="log-right">
+                  <span :class="['log-amount', log.amount >= 0 ? 'positive' : 'negative']">
+                    {{ log.amount >= 0 ? '+' : '' }}{{ log.amount }}
+                  </span>
+                  <span class="log-balance">余额: {{ log.balance_after }}</span>
+                </div>
+                <div class="log-time">{{ formatLogDate(log.created_at) }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="sidebar-modal-footer">
+            <button class="sidebar-modal-btn sidebar-modal-btn-ghost" @click="closeCreditsLogModal">关闭</button>
+            <div class="pagination-info" v-if="creditsLogTotal > 0">
+              共 {{ creditsLogTotal }} 条记录
+            </div>
           </div>
         </div>
       </div>
@@ -672,5 +765,198 @@ onMounted(() => {
 .sidebar-modal-btn-danger:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* 积分记录弹窗样式 */
+.credits-log-modal {
+  max-width: 480px;
+}
+
+.credits-log-loading,
+.credits-log-empty {
+  text-align: center;
+  padding: 40px;
+  color: #888;
+  font-size: 14px;
+}
+
+.credits-log-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.credits-log-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #3d3d5c;
+}
+
+.credits-log-item:last-child {
+  border-bottom: none;
+}
+
+.log-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.log-type-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.log-type-badge.deduct {
+  background: rgba(245, 34, 45, 0.15);
+  color: #f5222d;
+}
+
+.log-type-badge.refund {
+  background: rgba(82, 196, 26, 0.15);
+  color: #52c41a;
+}
+
+.log-type-badge.reward {
+  background: rgba(24, 144, 255, 0.15);
+  color: #1890ff;
+}
+
+.log-type-badge.admin_adjust {
+  background: rgba(250, 173, 20, 0.15);
+  color: #faad14;
+}
+
+.log-desc {
+  font-size: 12px;
+  color: #aaa;
+}
+
+.log-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.log-amount.positive {
+  color: #52c41a;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.log-amount.negative {
+  color: #f5222d;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.log-balance {
+  font-size: 11px;
+  color: #666;
+}
+
+.log-time {
+  font-size: 10px;
+  color: #555;
+  margin-top: 4px;
+}
+
+.pagination-info {
+  font-size: 12px;
+  color: #888;
+}
+
+.credits-arrow {
+  font-size: 18px;
+  color: var(--text-dim);
+  transition: transform 0.2s;
+}
+
+.credits-display:hover .credits-arrow {
+  transform: translateX(3px);
+}
+
+/* 积分记录列表样式 */
+.credits-log-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #3d3d5c;
+}
+
+.credits-log-item:last-child {
+  border-bottom: none;
+}
+
+.log-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.log-type-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.log-type-badge.deduct {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.log-type-badge.refund {
+  background: rgba(82, 196, 26, 0.15);
+  color: #52c41a;
+}
+
+.log-type-badge.reward {
+  background: rgba(33, 150, 243, 0.15);
+  color: #2196f3;
+}
+
+.log-type-badge.admin_adjust {
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffc107;
+}
+
+.log-desc {
+  font-size: 13px;
+  color: #ccc;
+}
+
+.log-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.log-amount {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.log-amount.positive {
+  color: #52c41a;
+}
+
+.log-amount.negative {
+  color: #f87171;
+}
+
+.log-balance {
+  font-size: 12px;
+  color: #888;
+}
+
+.log-time {
+  font-size: 11px;
+  color: #666;
+}
+
+.pagination-info {
+  font-size: 12px;
+  color: #888;
 }
 </style>

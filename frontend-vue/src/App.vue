@@ -41,11 +41,6 @@ async function refreshUserInfo() {
 onMounted(() => {
   refreshUserInfo()
 })
-
-function handleLogout() {
-  authStore.logout()
-  router.push('/login')
-}
 </script>
 
 <template>

@@ -54,10 +54,6 @@ function sendMessage() {
   emit('send', text)
 }
 
-function triggerFileUpload() {
-  fileInput.value?.click()
-}
-
 async function handleFileUpload(event: Event) {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]

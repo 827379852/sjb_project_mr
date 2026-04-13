@@ -29,15 +29,41 @@ from app.core.response import ApiResponse
 from app.core.xiaohongshu import search_xiaohongshu
 from app.models.user import User, TASK_COST_CREDITS
 from app.models.study import Study, StudyPersona, StudyInterview, ScoutResult, StudyReport
+from app.models.credit_log import CreditLog, CreditLogType
 from app.dependencies.auth import get_current_active_user, get_user_by_api_key
 from app.schemas.study import StudyOut, StudyDetailOut
+
+
+# ── 积分日志记录辅助函数 ────────────────────────────────────────────
+async def record_credit_log(
+    db: AsyncSession,
+    user_id: str,
+    amount: int,
+    balance_after: int,
+    log_type: str,
+    description: str | None = None,
+    related_study_id: str | None = None,
+) -> CreditLog:
+    """记录积分变动日志"""
+    log = CreditLog(
+        user_id=user_id,
+        amount=amount,
+        balance_after=balance_after,
+        log_type=log_type,
+        description=description,
+        related_study_id=related_study_id,
+    )
+    db.add(log)
+    await db.flush()
+    return log
+
 
 router = APIRouter(prefix="/research-flow", tags=["研究闭环"])
 
 
 # ── 小红书爬虫并发控制（最多同时运行 1 个实例）────────────────────
 # 用信号量限制，避免多个用户同时触发爬虫互相干扰
-_xhs_semaphore = asyncio.Semaphore(6)
+_xhs_semaphore = asyncio.Semaphore(2)
 
 
 # ── 小红书爬虫异步封装（进程池版，解决 Windows 线程中 playwright 子进程问题）──
@@ -330,6 +356,16 @@ async def search_personas(
         # 扣除积分
         current_user.credits -= TASK_COST_CREDITS
         await db.flush()
+        # 记录积分扣除日志
+        await record_credit_log(
+            db=db,
+            user_id=current_user.id,
+            amount=-TASK_COST_CREDITS,
+            balance_after=current_user.credits,
+            log_type=CreditLogType.DEDUCT.value,
+            description="市场研究任务积分扣除",
+            related_study_id=request.study_id,
+        )
         logger.info(f"[积分] 用户 {current_user.email} 扣除 {TASK_COST_CREDITS} 积分, 剩余 {current_user.credits}")
     else:
         logger.info(f"[积分] 超级管理员 {current_user.email} 跳过积分检查")
@@ -403,6 +439,16 @@ async def search_personas(
                     user_to_refund = await new_db.get(User, user_id)
                     if user_to_refund:
                         user_to_refund.credits += TASK_COST_CREDITS
+                        # 记录积分返还日志
+                        await record_credit_log(
+                            db=new_db,
+                            user_id=user_id,
+                            amount=TASK_COST_CREDITS,
+                            balance_after=user_to_refund.credits,
+                            log_type=CreditLogType.REFUND.value,
+                            description="任务失败，积分返还",
+                            related_study_id=request.study_id,
+                        )
                         await new_db.commit()
                         logger.info(f"[积分] 任务失败，返还 {TASK_COST_CREDITS} 积分给用户 {user_to_refund.email}, 当前积分 {user_to_refund.credits}")
                         yield f"data: {json.dumps({'type': 'credits_refund', 'amount': TASK_COST_CREDITS, 'message': '任务失败，积分已返还'}, ensure_ascii=False)}\n\n"
@@ -470,6 +516,16 @@ async def search_personas(
                     user_to_refund = await new_db.get(User, user_id)
                     if user_to_refund:
                         user_to_refund.credits += TASK_COST_CREDITS
+                        # 记录积分返还日志
+                        await record_credit_log(
+                            db=new_db,
+                            user_id=user_id,
+                            amount=TASK_COST_CREDITS,
+                            balance_after=user_to_refund.credits,
+                            log_type=CreditLogType.REFUND.value,
+                            description="任务中断，积分返还",
+                            related_study_id=request.study_id,
+                        )
                         await new_db.commit()
                         logger.info(f"[积分] 任务未完成（中断），返还 {TASK_COST_CREDITS} 积分给用户 {user_to_refund.email}, 当前积分 {user_to_refund.credits}")
                         try:
@@ -1936,6 +1992,16 @@ JSON 格式输出：
                 user_to_refund = await db.get(User, user_id)
                 if user_to_refund:
                     user_to_refund.credits += TASK_COST_CREDITS
+                    # 记录积分返还日志
+                    await record_credit_log(
+                        db=db,
+                        user_id=user_id,
+                        amount=TASK_COST_CREDITS,
+                        balance_after=user_to_refund.credits,
+                        log_type=CreditLogType.REFUND.value,
+                        description="自动研究任务未完成，积分返还",
+                        related_study_id=study_id,
+                    )
                     await db.commit()
                     logger.info(f"[积分] 自动研究未完成，返还 {TASK_COST_CREDITS} 积分给用户 {user_to_refund.email}")
 
@@ -1985,6 +2051,16 @@ async def submit_auto_research(
             if user_to_deduct:
                 user_to_deduct.credits -= TASK_COST_CREDITS
                 has_deducted = True
+                # 记录积分扣除日志
+                await record_credit_log(
+                    db=db,
+                    user_id=current_user.id,
+                    amount=-TASK_COST_CREDITS,
+                    balance_after=user_to_deduct.credits,
+                    log_type=CreditLogType.DEDUCT.value,
+                    description="API提交市场研究任务",
+                    related_study_id=study.id,
+                )
                 logger.info(f"[积分] 提交任务扣除 {TASK_COST_CREDITS} 积分，用户 {user_to_deduct.email}，剩余 {user_to_deduct.credits}")
 
         await db.commit()

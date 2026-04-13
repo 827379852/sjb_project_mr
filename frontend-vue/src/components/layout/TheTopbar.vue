@@ -6,27 +6,6 @@ const router = useRouter()
 const researchStore = useResearchStore()
 const authStore = useAuthStore()
 
-function clearChat() {
-  researchStore.reset()
-  if (typeof window !== 'undefined' && (window as any).clearMessages) {
-    (window as any).clearMessages()
-  }
-}
-
-function exportReport() {
-  if (!researchStore.reportContent) {
-    alert('暂无报告内容，请先生成报告')
-    return
-  }
-  const blob = new Blob([researchStore.reportContent], { type: 'text/markdown' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `research-report-${researchStore.studyId || Date.now()}.md`
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
 function goAdmin() {
   router.push('/admin')
 }

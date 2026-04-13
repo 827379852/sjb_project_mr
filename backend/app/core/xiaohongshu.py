@@ -296,21 +296,21 @@ def search_xiaohongshu(
                 except Exception as e:
                     print(f"  选择最多点赞失败: {e}")
 
-                # 2. 选择时间范围：一周内
+                # 2. 选择时间范围：半年内
                 try:
-                    time_option = page.get_by_text("一周内", exact=True).nth(1)
+                    time_option = page.get_by_text("半年内", exact=True).nth(1)
                     if time_option.is_visible():
                         time_option.click()
-                        print("  已选择：一周内")
+                        print("  已选择：半年内")
                         page.wait_for_timeout(1000)
                     else:
-                        time_option = page.locator("span:has-text('一周内')").first
+                        time_option = page.locator("span:has-text('半年内')").first
                         if time_option.is_visible():
                             time_option.click()
-                            print("  已选择：一周内（备用选择器）")
+                            print("  已选择：半年内（备用选择器）")
                             page.wait_for_timeout(1000)
                 except Exception as e:
-                    print(f"  选择一周内失败: {e}")
+                    print(f"  选择半年内失败: {e}")
 
                 # 3. 选择内容类型：图文
                 try:

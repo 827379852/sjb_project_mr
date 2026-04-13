@@ -4,6 +4,26 @@ const API_BASE = window.location.hostname === 'localhost'
   ? 'http://localhost:8000/api/v1'
   : `${window.location.origin}/api/v1`
 
+export interface CreditLog {
+  id: string
+  user_id: string
+  user_email: string | null
+  user_name: string | null
+  amount: number
+  balance_after: number
+  log_type: string
+  description: string | null
+  related_study_id: string | null
+  created_at: string
+}
+
+interface CreditLogListResponse {
+  items: CreditLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export function useAuthApi() {
   const authStore = useAuthStore()
 
@@ -81,10 +101,33 @@ export function useAuthApi() {
     return user !== null
   }
 
+  async function getMyCreditLogs(page: number = 1, pageSize: number = 20): Promise<CreditLogListResponse | null> {
+    if (!authStore.token) return null
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/credit-logs?page=${page}&page_size=${pageSize}`, {
+        headers: {
+          'Authorization': `Bearer ${authStore.token}`
+        }
+      })
+
+      const data = await res.json()
+
+      if (data.code === 0 && data.data) {
+        return data.data
+      } else {
+        return null
+      }
+    } catch {
+      return null
+    }
+  }
+
   return {
     login,
     register,
     getMe,
-    checkAuth
+    checkAuth,
+    getMyCreditLogs
   }
 }
