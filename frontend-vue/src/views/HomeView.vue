@@ -413,6 +413,14 @@ const isCreatingNewStudy = ref(false)
 // 监听 studyId 变化，恢复历史消息
 // 注意：只在加载历史记录时恢复，创建新任务时不恢复（因为消息已经在实时显示）
 watch(() => researchStore.studyId, (newId, oldId) => {
+  // ========== 关键修复：切换任务时取消之前的 SSE 请求 ==========
+  // 如果从一个任务切换到另一个任务，取消之前的所有请求
+  if (oldId && newId !== oldId) {
+    console.log(`[StudyId Watch] 检测到任务切换: ${oldId} -> ${newId}，取消之前的 SSE 请求`)
+    researchStore.abortAllRequests()
+  }
+  // ============================================================
+
   // 如果正在创建新任务，跳过恢复
   if (isCreatingNewStudy.value) {
     isCreatingNewStudy.value = false
@@ -533,11 +541,16 @@ async function runDesignStudy(userRequest: string) {
   researchStore.setPhase('designing')
   researchStore.updateStepProgress('design', 'active')
 
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
+
   try {
     const res = await fetch(`${API_BASE}/research-flow/design-study`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ user_request: userRequest, context: attachContext })
+      body: JSON.stringify({ user_request: userRequest, context: attachContext }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -620,7 +633,12 @@ async function runDesignStudy(userRequest: string) {
       </div>
     `)
     scrollToBottom()
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误状态
+    if (e.name === 'AbortError') {
+      console.log('[runDesignStudy] 请求已取消')
+      return
+    }
     console.error('runDesignStudy error:', e)
     updateStepCardStatus('error')
   }
@@ -726,6 +744,10 @@ async function doTriggerPersonas() {
   researchStore.setPhase('personas')
   researchStore.updateStepProgress('personas', 'active')
 
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
+
   try {
     const res = await fetch(`${API_BASE}/research-flow/search-personas`, {
       method: 'POST',
@@ -734,7 +756,8 @@ async function doTriggerPersonas() {
         study_id: researchStore.studyId,
         persona_description: '根据研究背景生成',
         max_count: 10
-      })
+      }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -821,7 +844,12 @@ async function doTriggerPersonas() {
     // 自动触发社媒侦察
     await triggerScout()
     return
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误状态
+    if (e.name === 'AbortError') {
+      console.log('[doTriggerPersonas] 请求已取消')
+      return
+    }
     console.error('triggerPersonas error:', e)
     updateStepCardStatus('error')
   }
@@ -837,6 +865,10 @@ async function triggerScout() {
   researchStore.setStreaming(true)
   researchStore.setPhase('scouting')
   researchStore.updateStepProgress('scout', 'active')
+
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
 
   // 从研究标题提取关键词
   const title = researchStore.studyTitle.replace('...', '')
@@ -971,7 +1003,8 @@ async function triggerScout() {
         study_id: researchStore.studyId,
         keywords,
         platforms: ['小红书', '微博', '抖音']
-      })
+      }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -1121,7 +1154,12 @@ async function triggerScout() {
     // 自动触发访谈
     await triggerAutoInterview()
     return
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误状态
+    if (e.name === 'AbortError') {
+      console.log('[triggerScout] 请求已取消')
+      return
+    }
     console.error('triggerScout error:', e)
     updateStepCardStatus('error')
   }
@@ -1137,6 +1175,10 @@ async function triggerAutoInterview() {
   researchStore.setStreaming(true)
   researchStore.setPhase('interviewing')
   researchStore.updateStepProgress('interview', 'active')
+
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
 
   let totalPersonas = 0
   let completedPersonas = 0
@@ -1225,7 +1267,8 @@ async function triggerAutoInterview() {
     const res = await fetch(`${API_BASE}/research-flow/auto-interview`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ study_id: researchStore.studyId })
+      body: JSON.stringify({ study_id: researchStore.studyId }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -1364,7 +1407,12 @@ async function triggerAutoInterview() {
     // 自动触发报告生成
     await triggerReport()
     return
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误状态
+    if (e.name === 'AbortError') {
+      console.log('[triggerAutoInterview] 请求已取消')
+      return
+    }
     console.error('triggerAutoInterview error:', e)
     updateStepCardStatus('error')
   }
@@ -1379,6 +1427,10 @@ async function triggerReport() {
   researchStore.setStreaming(true)
   researchStore.setPhase('reporting')
   researchStore.updateStepProgress('report', 'active')
+
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
 
   const transcripts = Object.entries(researchStore.interviewHistory).map(([id, msgs]) => ({
     persona_id: id,
@@ -1397,7 +1449,8 @@ async function triggerReport() {
         personas: researchStore.personas,
         interview_transcripts: transcripts,
         format: 'markdown'
-      })
+      }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -1462,7 +1515,12 @@ async function triggerReport() {
     `)
     await nextTick()
     scrollToBottom()
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误状态
+    if (e.name === 'AbortError') {
+      console.log('[triggerReport] 请求已取消')
+      return
+    }
     console.error('triggerReport error:', e)
     updateStepCardStatus('error')
   }
@@ -1475,6 +1533,10 @@ async function runInterview(question: string) {
   const personaId = researchStore.selectedPersona.id
   researchStore.setStreaming(true)
 
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
+
   try {
     const res = await fetch(`${API_BASE}/research-flow/interview/stream`, {
       method: 'POST',
@@ -1484,7 +1546,8 @@ async function runInterview(question: string) {
         persona_id: personaId,
         question,
         conversation_history: researchStore.interviewHistory[personaId] || []
-      })
+      }),
+      signal  // 添加取消信号
     })
 
     if (!res.ok) {
@@ -1529,7 +1592,12 @@ async function runInterview(question: string) {
 
     researchStore.addInterviewMessage(personaId, { role: 'user', content: question })
     researchStore.addInterviewMessage(personaId, { role: 'assistant', content: fullResponse })
-  } catch (e) {
+  } catch (e: any) {
+    // 如果是取消请求导致的错误，不显示错误
+    if (e.name === 'AbortError') {
+      console.log('[runInterview] 请求已取消')
+      return
+    }
     console.error('访谈出错', e)
   }
 

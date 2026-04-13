@@ -86,6 +86,24 @@ export function useResearchApi() {
 
   // 加载历史研究到 store
   function loadStudy(study: StudyDetail): StudyDetail {
+    // ========== 关键修复：加载新研究前先取消之前的请求并清空旧数据 ==========
+    store.abortAllRequests()
+
+    // 清空旧数据，防止上一个任务的数据混入
+    store.setPersonas([])
+    store.setInterviewHistory({})
+    store.setScoutResults([])
+    store.setReportContent('')
+    store.setSelectedPersona(null)
+    store.clearAttachments()
+    // 重置步骤进度
+    store.updateStepProgress('design', 'pending')
+    store.updateStepProgress('personas', 'pending')
+    store.updateStepProgress('scout', 'pending')
+    store.updateStepProgress('interview', 'pending')
+    store.updateStepProgress('report', 'pending')
+    // ============================================================
+
     // 先设置其他数据，最后设置 studyId 以触发 watch
     store.setStudyTitle(study.title)
     store.setPhase(study.current_phase as any)
