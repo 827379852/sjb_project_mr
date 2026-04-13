@@ -76,7 +76,7 @@ def _run_xiaohongshu_sync(keyword: str, max_posts: int = 5, max_comments: int = 
             search_xiaohongshu,
             keyword=keyword,
             max_posts=max_posts,
-            scroll_times=3,
+            scroll_times=0,  # 不滚动加载
             max_comments_per_post=max_comments,
             min_delay=2,
             max_delay=4,
@@ -636,27 +636,56 @@ JSON 输出：
                     }
                 ))
 
-                # ── 真实小红书搜索 ─────────────────────────────────────
+                # ── 真实小红书搜索（带重试机制）─────────────────────────
                 combined_kw = " ".join(persona_kw_list) if persona_kw_list else research_t
+
+                # ========== 醒目输出搜索关键字 ==========
+                print("\n" + "=" * 60)
+                print(f"🔍【小红书搜索】")
+                print(f"   人设: {p_name}")
+                print(f"   关键字: {combined_kw}")
+                print("=" * 60 + "\n")
+                logger.info(f"🔍【小红书搜索】人设: {p_name} | 关键字: {combined_kw}")
+                # ========================================
 
                 await persona_queue.put((
                     'scout_progress',
                     {'persona_id': p_id, 'message': f'🔍 开始小红书搜索: {combined_kw}'}
                 ))
 
-                try:
-                    async with _xhs_semaphore:
-                        xhs_data = await asyncio.to_thread(
-                            _run_xiaohongshu_sync,
-                            keyword=combined_kw,
-                            max_posts=6,
-                            max_comments=20
-                        )
-                except Exception as e:
-                    logger.warning(f"小红书搜索失败: {e}")
-                    xhs_data = []
+                # 重试机制：最多重试 2 次
+                max_retries = 2
+                retry_count = 0
+                xhs_data = []
 
-                if xhs_data:
+                while retry_count <= max_retries:
+                    try:
+                        async with _xhs_semaphore:
+                            xhs_data = await asyncio.to_thread(
+                                _run_xiaohongshu_sync,
+                                keyword=combined_kw,
+                                max_posts=6,
+                                max_comments=20
+                            )
+                    except Exception as e:
+                        logger.warning(f"小红书搜索失败: {e}")
+                        xhs_data = []
+
+                    # 如果找到帖子，直接跳出循环
+                    if xhs_data and len(xhs_data) > 0:
+                        break
+
+                    # 没有找到帖子，准备重试
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        print(f"[小红书搜索] 人设 {p_name} 搜索结果为空，第 {retry_count} 次重试中... 关键字: {combined_kw}")
+                        await persona_queue.put((
+                            'scout_progress',
+                            {'persona_id': p_id, 'message': f'⚠️ 未找到帖子，正在重试 ({retry_count}/{max_retries})...'}
+                        ))
+                        await asyncio.sleep(1)  # 短暂等待后重试
+
+                if xhs_data and len(xhs_data) > 0:
                     await persona_queue.put((
                         'scout_progress',
                         {'persona_id': p_id, 'message': f'✓ 找到 {len(xhs_data)} 篇小红书帖子，正在提取正文和评论...'}

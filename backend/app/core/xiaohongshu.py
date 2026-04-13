@@ -349,12 +349,7 @@ def search_xiaohongshu(
         page.screenshot(path = r'D:\temp\2.jpg')
         # ========== 筛选操作结束 ==========
 
-        print(f"开始滚动加载数据 (共{scroll_times}次)...")
-        for i in range(scroll_times):
-            page.mouse.wheel(0, 3000)
-            time.sleep(2)
-            print(f"  滚动第 {i+1} 次...")
-
+        # 已移除滚动加载，直接解析当前页面数据
         print("解析数据...")
         page.screenshot(path=r'D:\temp\3.jpg')
         cards = page.query_selector_all(".note-item")
