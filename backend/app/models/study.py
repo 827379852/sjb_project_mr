@@ -21,6 +21,7 @@ class Study(Base):
     title: Mapped[str] = mapped_column(String(200), default="新研究")
     user_request: Mapped[str] = mapped_column(Text, default="")  # 用户输入的研究需求
     design_content: Mapped[str] = mapped_column(Text, default="")  # LLM 生成的设计框架
+    previous_design_content: Mapped[str] = mapped_column(Text, default="")  # 调整前的设计框架（用于对比）
 
     # 状态
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_progress | completed | failed | archived

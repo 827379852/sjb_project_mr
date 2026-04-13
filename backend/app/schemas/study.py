@@ -86,6 +86,7 @@ class StudyDetailOut(BaseModel):
     title: str
     user_request: str
     design_content: str
+    previous_design_content: str = ""
     status: str
     current_phase: str
     created_at: datetime

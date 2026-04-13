@@ -73,6 +73,8 @@ onMounted(() => {
   ;(window as any).triggerAutoInterview = triggerAutoInterview
   ;(window as any).triggerReport = triggerReport
   ;(window as any).editStudy = () => {
+    // 设置为 adjusting 阶段，这样提交时会调用 adjustDesign
+    researchStore.setPhase('post-design')
     if (inputAreaRef.value) {
       ;(inputAreaRef.value as any).setInputText('调整研究方向为：')
     }
@@ -165,6 +167,10 @@ function restoreMessagesFromStore() {
     const designId = 'design-restored'
     // 只有 post-design 阶段显示下一步按钮（用户可以在此调整）
     const showDesignFooter = researchStore.phase === 'post-design'
+    // 如果有调整前的框架，显示对比；否则显示当前框架
+    const displayContent = researchStore.previousDesignContent
+      ? buildDesignComparisonHtml(researchStore.previousDesignContent, researchStore.designContent)
+      : researchStore.designContent
     messages.value.push({
       id: `design-content`,
       type: 'stepCard',
@@ -172,9 +178,9 @@ function restoreMessagesFromStore() {
       stepData: {
         id: designId,
         title: '🎯 研究框架设计',
-        desc: '已完成',
+        desc: researchStore.previousDesignContent ? '已调整' : '已完成',
         status: 'done',
-        content: researchStore.designContent,
+        content: displayContent,
         footer: showDesignFooter ? `
           <div class="confirm-block">
             <div class="confirm-question">框架已生成 ✓ 接下来要怎么做？</div>
@@ -491,12 +497,177 @@ async function handleSend(text: string) {
   addUserMsg(text)
 
   if (researchStore.phase === 'idle') {
+    // 新建研究
     await runDesignStudy(text)
+  } else if (researchStore.phase === 'post-design') {
+    // 调整研究方向 - 更新现有研究框架
+    await adjustDesign(text)
   } else if (researchStore.phase === 'interviewing' && researchStore.selectedPersona) {
     await runInterview(text)
   } else {
+    // 其他情况默认新建研究
     await runDesignStudy(text)
   }
+}
+
+/** 调整研究方向 - 调用新接口更新现有研究框架 */
+async function adjustDesign(adjustmentRequest: string) {
+  if (!researchStore.studyId) {
+    console.error('[adjustDesign] 没有 studyId，无法调整')
+    return
+  }
+
+  // 找到现有的设计卡片
+  const designCard = messages.value.find(m => m.type === 'stepCard' && m.stepData?.id?.includes('design'))
+  if (!designCard?.stepData) {
+    console.error('[adjustDesign] 找不到设计卡片')
+    return
+  }
+
+  // 保存旧设计内容用于对比
+  const oldDesign = researchStore.designContent
+  researchStore.setPreviousDesignContent(oldDesign)
+
+  // 设置卡片状态为运行中
+  designCard.stepData.status = 'running'
+  designCard.stepData.desc = '正在调整...'
+  designCard.stepData.footer = ''
+
+  researchStore.setStreaming(true)
+  researchStore.setPhase('post-design')
+  researchStore.updateStepProgress('design', 'active')
+
+  // 创建 AbortController 用于取消请求
+  const controller = researchStore.createAbortController()
+  const signal = controller.signal
+
+  try {
+    const res = await fetch(`${API_BASE}/research-flow/adjust-design`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        study_id: researchStore.studyId,
+        adjustment: adjustmentRequest,
+        context: researchStore.attachments.map(a => a.text).join('\n\n')
+      }),
+      signal
+    })
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        authStore.logout()
+        router.push('/login')
+        return
+      }
+      designCard.stepData.status = 'error'
+      designCard.stepData.desc = '调整失败'
+      researchStore.setStreaming(false)
+      return
+    }
+
+    const reader = res.body?.getReader()
+    if (!reader) {
+      designCard.stepData.status = 'error'
+      designCard.stepData.desc = '调整失败'
+      researchStore.setStreaming(false)
+      return
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let fullContent = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+
+      const { frames, rest } = splitSSEDataFrames(buffer)
+      buffer = rest
+      for (const eventStr of frames) {
+        if (eventStr === '[DONE]') continue
+        try {
+          const event = JSON.parse(eventStr) as SSEEvent
+          if (event.type === 'content') {
+            fullContent += event.delta as string
+            // 显示调整后的新框架（同时显示旧框架用于对比）
+            designCard.stepData.content = buildDesignComparisonHtml(oldDesign, fullContent)
+            scrollToBottom()
+          }
+        } catch { /* 跳过损坏帧 */ }
+      }
+
+      if (done) {
+        if (buffer.trim()) {
+          const flush = splitSSEDataFrames(buffer + '\n\n')
+          for (const eventStr of flush.frames) {
+            if (eventStr === '[DONE]') continue
+            try {
+              const event = JSON.parse(eventStr) as SSEEvent
+              if (event.type === 'content') {
+                fullContent += event.delta as string
+              }
+            } catch { /* */ }
+          }
+        }
+        break
+      }
+    }
+
+    // 更新研究设计内容
+    researchStore.setDesignContent(fullContent)
+    designCard.stepData.status = 'done'
+    designCard.stepData.desc = '已调整'
+
+    // 恢复按钮（显示调整后的新框架，同时展开旧框架供对比）
+    designCard.stepData.content = buildDesignComparisonHtml(oldDesign, fullContent)
+    designCard.stepData.footer = `
+      <div class="confirm-block">
+        <div class="confirm-question">框架已更新 ✓ 接下来要怎么做？</div>
+        <div class="confirm-options">
+          <button class="confirm-btn primary" onclick="window.triggerPersonas && window.triggerPersonas()">🧠 开始市场调研</button>
+          <button class="confirm-btn" onclick="window.editStudy && window.editStudy()">✏️ 调整研究方向</button>
+        </div>
+      </div>
+    `
+    scrollToBottom()
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      console.log('[adjustDesign] 请求已取消')
+      return
+    }
+    console.error('adjustDesign error:', e)
+    designCard.stepData.status = 'error'
+    designCard.stepData.desc = '调整失败'
+  }
+
+  researchStore.setStreaming(false)
+}
+
+/** 构建调整前后对比的 HTML */
+function buildDesignComparisonHtml(oldDesign: string, newDesign: string): string {
+  const oldEsc = escapeHtml(oldDesign || '（原始框架内容）')
+  const newEsc = escapeHtml(newDesign)
+
+  return `
+    <div class="design-comparison">
+      <div class="comparison-notice" style="margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:6px;border-left:3px solid var(--accent);font-size:12px;color:var(--text-dim)">
+        📝 已对比原框架进行调整，下方为调整后结果：
+      </div>
+      <div class="new-design" style="background:var(--surface2);border-radius:8px;padding:16px;border:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--accent);margin-bottom:8px;font-weight:600">✨ 调整后</div>
+        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text)">${newEsc}</div>
+      </div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-dim);padding:4px 0;user-select:none;list-style:none">
+          ▶ 点击查看调整前对比
+        </summary>
+        <div style="margin-top:10px;background:var(--surface3);border-radius:8px;padding:16px;border:1px solid var(--border-dim);opacity:0.85">
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;font-weight:600">◀ 调整前</div>
+          <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;color:var(--text-secondary)">${oldEsc}</div>
+        </div>
+      </details>
+    </div>
+  `
 }
 
 /** 从单帧原始文本提取 data: 负载（支持多行 data:） */

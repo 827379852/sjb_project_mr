@@ -326,6 +326,98 @@ async def design_study(
     )
 
 
+# ── Step 1.5: adjustDesign ────────────────────────────────────────────
+
+class StudyAdjustRequest(BaseModel):
+    """调整研究设计请求"""
+    study_id: str = Field(..., description="研究ID")
+    adjustment: str = Field(..., description="调整要求（自然语言）")
+    context: str = Field("", description="补充上下文")
+
+
+@router.post("/adjust-design")
+async def adjust_design(
+    request: StudyAdjustRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    调整现有研究框架（不创建新会话）。
+
+    - 保存当前 design_content 到 previous_design_content
+    - 根据 adjustment 重新生成 design_content
+    - 保持同一个 study_id，phase 仍为 post-design
+
+    返回：Server-Sent Events 流式响应
+    """
+    # 验证 study 所有权
+    study = await db.get(Study, request.study_id)
+    if not study or study.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="研究不存在")
+
+    # 保存旧设计（用于前后对比）
+    study.previous_design_content = study.design_content or ""
+    await db.flush()
+
+    system_prompt = """你是一位资深的定性用户研究员，擅长设计用户访谈框架。
+用户希望对现有研究框架进行调整，你需要：
+1. 理解原有研究框架的结构和目标
+2. 根据用户的调整要求进行修改
+3. 保持框架结构（研究目标、目标人群、访谈框架、初始假设）
+4. 只更新需要调整的部分，其余保持不变
+
+请用清晰的中文输出更新后的完整研究方案。"""
+
+    user_prompt = f"""原有研究框架：
+{study.design_content}
+
+用户的调整要求：
+{request.adjustment}
+
+{f'补充上下文：{request.context}' if request.context else ''}
+
+请根据调整要求更新研究框架，输出完整的方案（保持原有结构）。"""
+
+    async def stream_generator():
+        full_content = ""
+        has_error = False
+        yield f"data: {json.dumps({'type': 'step', 'step': 'adjust_design', 'status': 'running'}, ensure_ascii=False)}\n\n"
+
+        try:
+            async for chunk in _llm_stream([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]):
+                full_content += chunk
+                yield f"data: {json.dumps({'type': 'content', 'delta': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            has_error = True
+            logger.error(f"研究设计调整失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+        # 重新获取数据库 session 并更新 Study 记录
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as new_db:
+            if not has_error:
+                study_to_update = await new_db.get(Study, request.study_id)
+                if study_to_update:
+                    study_to_update.design_content = full_content
+                    study_to_update.current_phase = "post-design"
+                    await new_db.commit()
+
+        yield f"data: {json.dumps({'type': 'step', 'step': 'adjust_design', 'status': 'done', 'study_id': request.study_id}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 # ── Step 2: searchPersonas ──────────────────────────────────────────
 
 @router.post("/search-personas")

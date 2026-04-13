@@ -16,6 +16,7 @@ export const useResearchStore = defineStore('research', () => {
   const phase = ref<Phase>('idle')
   const userRequest = ref('')
   const designContent = ref('')
+  const previousDesignContent = ref('')  // 调整前的设计框架
   const personas = ref<Persona[]>([])
   const selectedPersona = ref<Persona | null>(null)
   const interviewHistory = ref<Record<string, InterviewMessage[]>>({})
@@ -130,6 +131,10 @@ export const useResearchStore = defineStore('research', () => {
     designContent.value = content
   }
 
+  function setPreviousDesignContent(content: string) {
+    previousDesignContent.value = content
+  }
+
   function setPersonas(list: Persona[]) {
     personas.value = list
   }
@@ -160,6 +165,7 @@ export const useResearchStore = defineStore('research', () => {
     phase.value = 'idle'
     userRequest.value = ''
     designContent.value = ''
+    previousDesignContent.value = ''
     personas.value = []
     selectedPersona.value = null
     interviewHistory.value = {}
@@ -184,6 +190,7 @@ export const useResearchStore = defineStore('research', () => {
     phase,
     userRequest,
     designContent,
+    previousDesignContent,
     personas,
     selectedPersona,
     interviewHistory,
@@ -201,6 +208,7 @@ export const useResearchStore = defineStore('research', () => {
     setPhase,
     setUserRequest,
     setDesignContent,
+    setPreviousDesignContent,
     setPersonas,
     setInterviewHistory,
     setScoutResults,

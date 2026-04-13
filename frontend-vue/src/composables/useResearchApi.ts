@@ -109,6 +109,8 @@ export function useResearchApi() {
     store.setPhase(study.current_phase as any)
     store.setUserRequest(study.user_request || '')
     store.setDesignContent(study.design_content || '')
+    // 加载调整前的设计框架（如果有）
+    store.setPreviousDesignContent(study.previous_design_content || '')
 
     // 恢复人设
     const personaList: any[] = study.personas.map(p => ({

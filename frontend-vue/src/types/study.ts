@@ -54,6 +54,7 @@ export interface StudyDetail {
   title: string
   user_request: string
   design_content: string
+  previous_design_content: string  // 调整前的设计框架
   status: string
   current_phase: string
   created_at: string
