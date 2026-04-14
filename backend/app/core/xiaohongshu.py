@@ -408,11 +408,6 @@ async def search_xiaohongshu_async(
         await context.add_cookies(cookies)
 
         page = await context.new_page()
-        page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined
-        })
-        """)
         print(f"打开小红书...")
         try:
             await page.goto("https://www.xiaohongshu.com/explore", timeout=60000)
@@ -467,7 +462,7 @@ async def search_xiaohongshu_async(
             ]
             for selector in filter_selectors:
                 try:
-                    filter_btn = await page.wait_for_selector(selector, timeout=3000)
+                    filter_btn = await page.wait_for_selector(selector, timeout=10000)
                     if filter_btn:
                         # 先鼠标悬停，等待下拉菜单出现
                         await filter_btn.hover()

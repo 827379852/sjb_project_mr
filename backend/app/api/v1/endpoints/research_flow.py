@@ -71,21 +71,33 @@ _xhs_semaphore = asyncio.Semaphore(1)
 def _run_xiaohongshu_sync(keyword: str, max_posts: int = 5, max_comments: int = 20) -> list[dict]:
     """用进程池运行同步的 playwright 爬虫，避免 Windows 线程池中 subprocess_exec 不支持的问题"""
     import concurrent.futures
-    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            search_xiaohongshu,
-            keyword=keyword,
-            max_posts=max_posts,
-            scroll_times=0,  # 不滚动加载
-            max_comments_per_post=max_comments,
-            min_delay=2,
-            max_delay=4,
-            page_load_wait=3,
-            save_screenshots=False,
-            save_json=False,
-            headless=True
-        )
-        return future.result(timeout=240)
+    import traceback
+    logger.info(f"[爬虫进程池] 开始执行，关键词: {keyword[:50]}...")
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                search_xiaohongshu,
+                keyword=keyword,
+                max_posts=max_posts,
+                scroll_times=0,  # 不滚动加载
+                max_comments_per_post=max_comments,
+                min_delay=2,
+                max_delay=4,
+                page_load_wait=3,
+                save_screenshots=False,
+                save_json=False,
+                headless=True
+            )
+            result = future.result(timeout=600)  # 超时时间 10 分钟
+            logger.info(f"[爬虫进程池] 执行成功，返回 {len(result) if result else 0} 条帖子")
+            return result
+    except concurrent.futures.TimeoutError:
+        logger.error(f"[爬虫进程池] 超时！关键词: {keyword[:50]}")
+        return []
+    except Exception as e:
+        logger.error(f"[爬虫进程池] 执行失败: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
+        return []
 
 
 # ── Pydantic 请求/响应模型 ───────────────────────────────────────────
