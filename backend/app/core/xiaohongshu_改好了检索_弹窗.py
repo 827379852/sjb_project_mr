@@ -324,8 +324,6 @@ async def fetch_single_post_detail_popup(page, card, post, idx, page_load_wait, 
 
         # 按 ESC 关闭弹窗
         await page.keyboard.press("Escape")
-        await page.keyboard.press("Escape")
-        await page.keyboard.press("Escape")
         await random_sleep(0.3, 0.8)  # 随机延迟
         print(f"  [第{idx+1}帖] 已关闭弹窗")
 
@@ -401,18 +399,14 @@ async def search_xiaohongshu_async(
 
         context = await browser.new_context(
             user_agent=random.choice(USER_AGENTS),
-            viewport={"width": 1280, "height": 800},
+            viewport={'width': 1920, 'height': 1080},
             locale='zh-CN',
         )
 
         await context.add_cookies(cookies)
 
         page = await context.new_page()
-        page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined
-        })
-        """)
+
         print(f"打开小红书...")
         try:
             await page.goto("https://www.xiaohongshu.com/explore", timeout=60000)
@@ -478,7 +472,6 @@ async def search_xiaohongshu_async(
                         print("  已点击筛选按钮")
                         break
                 except:
-                    await save_error_screenshot(page, "selector_error")
                     continue
             await page.screenshot(path=os.path.join(ERROR_PIC_DIR, "filter_step1.png"))
 

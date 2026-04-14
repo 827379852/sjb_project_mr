@@ -35,14 +35,20 @@ function setupScoutEventDelegation(container: Element) {
     const target = e.target as HTMLElement
     const header = target.closest('.persona-scout-header') as HTMLElement | null
     if (header) {
-      const body = header.nextElementSibling as HTMLElement | null
+      // 优先通过 parentElement 查找 body，确保找到正确的元素
+      const parentBlock = header.closest('.persona-scout-block') as HTMLElement | null
+      const body = parentBlock?.querySelector('.persona-scout-body') as HTMLElement | null
       const icon = header.querySelector('.toggle-icon') as HTMLElement | null
       const hint = header.querySelector('.expand-hint') as HTMLElement | null
-      if (body) {
-        const isOpen = body.style.display !== 'none'
-        body.style.display = isOpen ? 'none' : 'block'
-        if (icon) icon.style.transform = isOpen ? '' : 'rotate(90deg)'
-        if (hint) hint.textContent = isOpen ? '点击展开详情' : '点击收起'
+      if (body && body.classList.contains('persona-scout-body')) {
+        // 使用 computedStyle 作为 fallback，确保判断准确
+        const computedDisplay = window.getComputedStyle(body).display
+        const inlineDisplay = body.style.display
+        // 只有当 computed 和 inline 都显示为 none 时才认为是关闭状态
+        const isClosed = (inlineDisplay === 'none') || (computedDisplay === 'none' && !inlineDisplay)
+        body.style.display = isClosed ? 'block' : 'none'
+        if (icon) icon.style.transform = isClosed ? 'rotate(90deg)' : ''
+        if (hint) hint.textContent = isClosed ? '点击收起' : '点击展开详情'
       }
       e.stopPropagation()
     }
@@ -52,10 +58,13 @@ function setupScoutEventDelegation(container: Element) {
     if (postToggle) {
       const toggleBody = postToggle.querySelector('.post-toggle-body') as HTMLElement | null
       const toggleIcon = postToggle.querySelector('.post-toggle-icon') as HTMLElement | null
-      if (toggleBody) {
-        const isOpen = toggleBody.style.display !== 'none'
-        toggleBody.style.display = isOpen ? 'none' : 'block'
-        if (toggleIcon) toggleIcon.style.transform = isOpen ? '' : 'rotate(90deg)'
+      if (toggleBody && toggleBody.classList.contains('post-toggle-body')) {
+        // 使用 computedStyle 作为 fallback，确保判断准确
+        const computedDisplay = window.getComputedStyle(toggleBody).display
+        const inlineDisplay = toggleBody.style.display
+        const isClosed = (inlineDisplay === 'none') || (computedDisplay === 'none' && !inlineDisplay)
+        toggleBody.style.display = isClosed ? 'block' : 'none'
+        if (toggleIcon) toggleIcon.style.transform = isClosed ? 'rotate(90deg)' : ''
       }
       e.stopPropagation()
     }
@@ -1161,7 +1170,7 @@ async function triggerScout() {
       // 模拟帖子（不折叠，展示完整）
       const sentimentEmoji = post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😤' : '😐'
       div.innerHTML = `
-        <div style="font-size:11px;${platformColor}">${post.platform || '小红书'}</span> <span style="font-size:12px">${sentimentEmoji}</span></div>
+        <div style="font-size:11px;${platformColor}">${post.platform || '小红书'} ${sentimentEmoji}</div>
         <div style="font-size:12px;line-height:1.5;margin-top:4px;color:var(--text-secondary)">${escapeHtml(post.content || '')}</div>
       `
     }
