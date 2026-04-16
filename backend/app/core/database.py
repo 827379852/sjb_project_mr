@@ -41,12 +41,15 @@ async def get_db() -> AsyncSession:
 async def init_db() -> None:
     """初始化数据库表结构"""
     # 需要先导入所有模型，确保 metadata 已注册
-    from app.models import user, research_project, questionnaire, respondent, research_run, study  # noqa
+    from app.models import user, research_project, questionnaire, respondent, research_run, study, system_config  # noqa
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     # 初始化超级管理员
     await _init_superuser()
+
+    # 初始化默认系统配置
+    await _init_system_configs()
 
 
 async def _init_superuser() -> None:
@@ -75,3 +78,24 @@ async def _init_superuser() -> None:
         session.add(admin)
         await session.commit()
         logger.info("✅ 超级管理员账号创建成功 (admin@qq.com / 123456)")
+
+
+async def _init_system_configs() -> None:
+    """初始化默认系统配置"""
+    from app.models.system_config import SystemConfig, DEFAULT_SYSTEM_CONFIGS
+
+    async with AsyncSessionLocal() as session:
+        for config_data in DEFAULT_SYSTEM_CONFIGS:
+            # 检查是否已存在
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == config_data["key"]))
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                continue
+
+            # 创建新配置
+            config = SystemConfig(**config_data)
+            session.add(config)
+
+        await session.commit()
+        logger.info("✅ 系统默认配置初始化完成")

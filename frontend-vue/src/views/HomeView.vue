@@ -6,7 +6,7 @@ import TheTopbar from '@/components/layout/TheTopbar.vue'
 import TheProgressBar from '@/components/layout/TheProgressBar.vue'
 import InputArea from '@/components/layout/InputArea.vue'
 import { useResearchStore, useUIStore, useAuthStore } from '@/stores'
-import { useMarkdown } from '@/composables'
+import { useMarkdown, useQueueStatus } from '@/composables'
 import type { SSEEvent, Persona } from '@/types'
 
 // 扩展 HTMLElement 以支持自定义属性
@@ -22,6 +22,9 @@ const researchStore = useResearchStore()
 const uiStore = useUIStore()
 const authStore = useAuthStore()
 const { simpleMarkdown } = useMarkdown()
+
+// 队列状态
+const { queueStatus, isQueued, isRunning, queuePosition, maxConcurrent, waitingCount } = useQueueStatus()
 
 // ── 社媒侦查折叠事件委托 ──────────────────────────────────────
 function escapeHtml(str: string): string {
@@ -1234,7 +1237,39 @@ async function triggerScout() {
         try {
           const event = JSON.parse(eventStr) as SSEEvent
           console.log('[Scout] SSE event type:', event.type, event)
-          if (event.type === 'persona_scout_start') {
+
+          // 处理排队状态
+          if (event.type === 'queue_status') {
+            const status = (event as any).status
+            const queuePosition = (event as any).queue_position
+            const maxConcurrent = (event as any).max_concurrent
+
+            if (status === 'queued') {
+              // 更新排队状态
+              queueStatus.value = {
+                task_id: researchStore.studyId || '',
+                study_id: researchStore.studyId || '',
+                status: 'queued',
+                queue_position: queuePosition,
+                queue_info: {
+                  max_concurrent: maxConcurrent || 4,
+                  queued: queuePosition || 0,
+                  running: 0,
+                  total_tasks: 0
+                }
+              }
+            } else if (status === 'running') {
+              // 开始执行
+              queueStatus.value = {
+                task_id: researchStore.studyId || '',
+                study_id: researchStore.studyId || '',
+                status: 'running',
+                queue_position: null,
+                queue_info: queueStatus.value?.queue_info || { max_concurrent: 4, queued: 0, running: 1, total_tasks: 1 }
+              }
+              updateProgress(`<span style="color:var(--green)">✓</span> 任务开始执行...`)
+            }
+          } else if (event.type === 'persona_scout_start') {
             // 新人设开始侦察
             currentPersonaId = (event as any).persona_id
             const pName = (event as any).persona_name
@@ -1911,7 +1946,13 @@ const statusIcons: Record<string, string> = {
                       {{ statusIcons[msg.stepData.status] || '○' }}
                     </div>
                     <div class="step-info">
-                      <div class="step-title">{{ msg.stepData.title }}</div>
+                      <div class="step-title">
+                        {{ msg.stepData.title }}
+                        <!-- 排队状态小标签（在标题后面） -->
+                        <span v-if="isQueued" class="queue-tag">
+                          排队中 第{{ queuePosition }}位
+                        </span>
+                      </div>
                       <div class="step-desc">{{ msg.stepData.desc }}</div>
                     </div>
                     <div class="step-expand-icon">
@@ -1956,12 +1997,73 @@ const statusIcons: Record<string, string> = {
         </div>
       </div>
     </Teleport>
+
+    <!-- 任务执行警告条 -->
+    <div v-if="researchStore.isStreaming" class="task-warning-bar">
+      <div class="warning-icon">⚠️</div>
+      <div class="warning-text">
+        任务执行中，请勿关闭或切换页面，可能导致任务中断
+      </div>
+    </div>
     </main>
   </div>
 </template>
 
 <style scoped>
 /* 样式从原有 App.vue 继承 */
+
+/* 排队状态小标签 */
+.queue-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.queue-tag {
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: rgba(102, 126, 234, 0.15);
+  color: #667eea;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 任务警告条 */
+.task-warning-bar {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 152, 0, 0.95);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.warning-icon {
+  font-size: 18px;
+}
+
+.warning-text {
+  font-size: 13px;
+  font-weight: 500;
+}
 
 /* 积分确认弹窗样式 */
 .credits-confirm-overlay {

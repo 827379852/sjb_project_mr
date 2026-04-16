@@ -33,6 +33,11 @@ from app.models.credit_log import CreditLog, CreditLogType
 from app.dependencies.auth import get_current_active_user, get_user_by_api_key
 from app.schemas.study import StudyOut, StudyDetailOut
 
+# 导入任务队列和浏览器池服务
+from app.services.task_queue import task_queue, TaskStatus
+from app.services.browser_pool import browser_pool
+from app.services.xhs_search import search_xhs_for_persona, close_study_browser
+
 
 # ── 积分日志记录辅助函数 ────────────────────────────────────────────
 async def record_credit_log(
@@ -678,8 +683,13 @@ async def scout_and_build(
     """
     Step 3:
     - 为每个人设生成专属搜索关键词（人群特征 + 研究主题）
-    - scoutTaskChat: 针对每个人设搜索社媒内容
+    - scoutTaskChat: 针对每个人设搜索社媒内容（串行执行，复用浏览器）
     - buildPersona: 用该人设专属的侦察结果增强该人设
+
+    改进：
+    - 用户级并发控制（最大并行用户数）
+    - 同一任务的人设串行执行
+    - 复用同一个浏览器实例
 
     返回：流式输出每个人的侦察结果和人设增强过程
     """
@@ -696,10 +706,29 @@ async def scout_and_build(
     research_topic = study.title or "、".join(request.keywords)
 
     async def stream_generator():
+        # ========== 任务队列管理 ==========
+        # 提交任务到队列
+        task = await task_queue.submit_task(
+            user_id=current_user.id,
+            study_id=request.study_id,
+        )
+
+        # 推送排队状态
+        yield f"data: {json.dumps({'type': 'queue_status', 'status': 'queued', 'queue_position': task.queue_position, 'max_concurrent': task_queue.max_concurrent_users}, ensure_ascii=False)}\n\n"
+
+        # 等待获取执行槽位
+        await task_queue.wait_for_slot(task)
+
+        # 推送开始执行状态
+        yield f"data: {json.dumps({'type': 'queue_status', 'status': 'running'}, ensure_ascii=False)}\n\n"
+
+        # ========== 开始实际任务 ==========
         yield f"data: {json.dumps({'type': 'step', 'step': 'scout_task', 'status': 'running', 'platforms': request.platforms}, ensure_ascii=False)}\n\n"
 
         persona_ids_to_update = request.persona_ids or [p.id for p in existing_personas]
         all_posts = []
+        task_success = True
+        error_message = None
 
         # ── 辅助：获取人设描述 ────────────────────────────────────
         def get_persona_desc(persona_obj):
@@ -708,27 +737,23 @@ async def scout_and_build(
                 f"{persona_obj.occupation or ''}，{(persona_obj.background or '')[:100]}"
             )
 
-        # ── 辅助：为一个人设执行完整侦察（3步 LLM 并行）───
-        async def scout_persona(
-            persona_obj,
-            persona_queue: asyncio.Queue,
-        ):
-            """
-            并行执行关键词生成 → 社媒搜索 → 人设增强，
-            将所有 SSE 事件推入 persona_queue。
-            """
-            p_id = persona_obj.id
-            p_name = persona_obj.name
-            p_data = persona_obj.persona_data or {}
-            p_desc = get_persona_desc(persona_obj)
-            research_t = research_topic
+        try:
+            # ========== 串行执行人设侦察（使用浏览器池）==========
+            for persona_idx, persona_id in enumerate(persona_ids_to_update):
+                persona = next((p for p in existing_personas if p.id == persona_id), None)
+                if not persona:
+                    continue
 
-            # ── 用 try/finally 保证 persona_scout_done 一定发出 ────────
-            all_xhs_posts: list = []
-            try:
-                # ① 生成专属关键词
-                keyword_prompt = f"""
-你是资深消费市场研究员。请为“小红书市场调研”生成搜索词，用来找到真实用户的讨论、吐槽、种草、避坑、对比和使用反馈。
+                p_id = persona.id
+                p_name = persona.name
+                p_data = persona.persona_data or {}
+                p_desc = get_persona_desc(persona)
+                all_xhs_posts: list = []
+
+                try:
+                    # ① 生成专属关键词
+                    keyword_prompt = f"""
+你是资深消费市场研究员。请为"小红书市场调研"生成搜索词，用来找到真实用户的讨论、吐槽、种草、避坑、对比和使用反馈。
 
 原始项目/产品信息：
 {study.user_request}
@@ -782,134 +807,104 @@ async def scout_and_build(
 }}
 """
 
-                keyword_result = await _llm_complete(
-                    [{"role": "user", "content": keyword_prompt}],
-                    temperature=0.7,
-                    json_mode=True,
-                )
+                    keyword_result = await _llm_complete(
+                        [{"role": "user", "content": keyword_prompt}],
+                        temperature=0.7,
+                        json_mode=True,
+                    )
 
-                # ② 解析关键词
-                try:
-                    kw_data = json.loads(keyword_result)
-                    persona_kw_list = kw_data.get("keywords", [])
-                except Exception:
-                    persona_kw_list = request.keywords
-
-                await persona_queue.put((
-                    'persona_scout_start',
-                    {
-                        'persona_id': p_id,
-                        'persona_name': p_name,
-                        'keywords': persona_kw_list,
-                    }
-                ))
-
-                # ── 真实小红书搜索（带重试机制）─────────────────────────
-                combined_kw = " ".join(persona_kw_list) if persona_kw_list else research_t
-
-                # ========== 醒目输出搜索关键字 ==========
-                print("\n" + "=" * 60)
-                print(f"🔍【小红书搜索】")
-                print(f"   人设: {p_name}")
-                print(f"   关键字: {combined_kw}")
-                print("=" * 60 + "\n")
-                logger.info(f"🔍【小红书搜索】人设: {p_name} | 关键字: {combined_kw}")
-                # ========================================
-
-                await persona_queue.put((
-                    'scout_progress',
-                    {'persona_id': p_id, 'message': f'🔍 开始小红书搜索: {combined_kw}'}
-                ))
-
-                # 重试机制：最多重试 2 次
-                max_retries = 2
-                retry_count = 0
-                xhs_data = []
-
-                while retry_count <= max_retries:
+                    # 解析关键词
                     try:
-                        async with _xhs_semaphore:
-                            xhs_data = await asyncio.to_thread(
-                                _run_xiaohongshu_sync,
+                        kw_data = json.loads(keyword_result)
+                        persona_kw_list = kw_data.get("keywords", [])
+                    except Exception:
+                        persona_kw_list = request.keywords
+
+                    yield f"data: {json.dumps({'type': 'persona_scout_start', 'persona_id': p_id, 'persona_name': p_name, 'keywords': persona_kw_list}, ensure_ascii=False)}\n\n"
+
+                    # ── 真实小红书搜索（使用浏览器池，串行执行）─────────────────────────
+                    combined_kw = " ".join(persona_kw_list) if persona_kw_list else research_topic
+
+                    # 醒目输出搜索关键字
+                    print("\n" + "=" * 60)
+                    print(f"🔍【小红书搜索】")
+                    print(f"   人设: {p_name}")
+                    print(f"   关键字: {combined_kw}")
+                    print("=" * 60 + "\n")
+                    logger.info(f"🔍【小红书搜索】人设: {p_name} | 关键字: {combined_kw}")
+
+                    yield f"data: {json.dumps({'type': 'scout_progress', 'persona_id': p_id, 'message': f'🔍 开始小红书搜索: {combined_kw}'}, ensure_ascii=False)}\n\n"
+
+                    # 使用浏览器池执行搜索
+                    xhs_data = []
+                    try:
+                        # 获取浏览器会话
+                        session = await browser_pool.acquire(request.study_id)
+
+                        try:
+                            # 执行搜索
+                            xhs_data = await search_xhs_for_persona(
+                                session=session,
                                 keyword=combined_kw,
                                 max_posts=6,
-                                max_comments=20
+                                max_comments=20,
                             )
+                        finally:
+                            # 释放会话（不关闭，等待任务完成后统一关闭）
+                            await browser_pool.release(request.study_id)
+
                     except Exception as e:
                         logger.warning(f"小红书搜索失败: {e}")
                         xhs_data = []
 
-                    # 如果找到帖子，直接跳出循环
+                    # 处理搜索结果
                     if xhs_data and len(xhs_data) > 0:
-                        break
+                        yield f"data: {json.dumps({'type': 'scout_progress', 'persona_id': p_id, 'message': f'✓ 找到 {len(xhs_data)} 篇小红书帖子，正在提取正文和评论...'}, ensure_ascii=False)}\n\n"
+                        for post in xhs_data:
+                            post_with_persona = {
+                                'platform': '小红书',
+                                'content': post.get('content', ''),
+                                'title': post.get('title', ''),
+                                'author': post.get('author', ''),
+                                'link': post.get('link', ''),
+                                'comments': post.get('comments', []),
+                                'persona_id': p_id,
+                                'persona_name': p_name,
+                                'is_real': True,
+                            }
+                            all_posts.append(post_with_persona)
+                            yield f"data: {json.dumps({'type': 'post', 'post': post_with_persona, 'persona_id': p_id}, ensure_ascii=False)}\n\n"
+                            await asyncio.sleep(0.05)
+                        all_xhs_posts = xhs_data
+                    else:
+                        yield f"data: {json.dumps({'type': 'scout_progress', 'persona_id': p_id, 'message': '⚠️ 未从小红书获取到数据，请检查网络或关键词'}, ensure_ascii=False)}\n\n"
 
-                    # 没有找到帖子，准备重试
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        print(f"[小红书搜索] 人设 {p_name} 搜索结果为空，第 {retry_count} 次重试中... 关键字: {combined_kw}")
-                        await persona_queue.put((
-                            'scout_progress',
-                            {'persona_id': p_id, 'message': f'⚠️ 未找到帖子，正在重试 ({retry_count}/{max_retries})...'}
-                        ))
-                        await asyncio.sleep(1)  # 短暂等待后重试
+                    # ── 提炼真实评论精华 ─────────────────────────────────────
+                    all_comments_raw = []
+                    for post in all_xhs_posts:
+                        for c in (post.get('comments', []) or [])[:5]:
+                            text = c.get('text', '').strip()
+                            if text and len(text) > 5:
+                                all_comments_raw.append(f"[{post.get('author','')}的帖子下] {text}")
 
-                if xhs_data and len(xhs_data) > 0:
-                    await persona_queue.put((
-                        'scout_progress',
-                        {'persona_id': p_id, 'message': f'✓ 找到 {len(xhs_data)} 篇小红书帖子，正在提取正文和评论...'}
-                    ))
-                    for post in xhs_data:
-                        post_with_persona = {
-                            'platform': '小红书',
-                            'content': post.get('content', ''),
-                            'title': post.get('title', ''),
-                            'author': post.get('author', ''),
-                            'link': post.get('link', ''),
-                            'comments': post.get('comments', []),
-                            'persona_id': p_id,
-                            'persona_name': p_name,
-                            'is_real': True,
-                        }
-                        await persona_queue.put((
-                            'post',
-                            {'post': post_with_persona, 'persona_id': p_id}
-                        ))
-                        await asyncio.sleep(0.05)
-                    all_xhs_posts = xhs_data
-                else:
-                    await persona_queue.put((
-                        'scout_progress',
-                        {'persona_id': p_id, 'message': '⚠️ 未从小红书获取到数据，请检查网络或关键词'}
-                    ))
+                    scout_comments = []
+                    char_count = 0
+                    for c in all_comments_raw[:15]:
+                        if char_count + len(c) < 600:
+                            scout_comments.append(c)
+                            char_count += len(c)
+                        if len(scout_comments) >= 8:
+                            break
 
-                # ── 提炼真实评论精华（供后续访谈/报告使用）────────────────
-                # 从所有帖子中选出最有代表性/情绪最强的评论，保留口语化语感
-                all_comments_raw = []
-                for post in all_xhs_posts:
-                    for c in (post.get('comments', []) or [])[:5]:
-                        text = c.get('text', '').strip()
-                        if text and len(text) > 5:
-                            all_comments_raw.append(f"[{post.get('author','')}的帖子下] {text}")
-
-                # 截取精华评论（最多 8 条，总字数控制在 600 以内）
-                scout_comments = []
-                char_count = 0
-                for c in all_comments_raw[:15]:
-                    if char_count + len(c) < 600:
-                        scout_comments.append(c)
-                        char_count += len(c)
-                    if len(scout_comments) >= 8:
-                        break
-
-                # ── LLM 根据真实数据总结洞察 ─────────────────────────────
-                xhs_summary_prompt = f"""你是资深用户研究员，请根据收集到的小红书帖子和评论，总结该用户群体的核心洞察。
+                    # ── LLM 根据真实数据总结洞察 ─────────────────────────────
+                    xhs_summary_prompt = f"""你是资深用户研究员，请根据收集到的小红书帖子和评论，总结该用户群体的核心洞察。
 
 人设：{p_name}（{p_desc}）
-研究主题：{research_t}
+研究主题：{research_topic}
 搜索关键词：{combined_kw}
 
 收集到的帖子（{len(all_xhs_posts)} 篇）：
-{json.dumps([{'title': p.get('title',''), 'content': p.get('content','')[::][:300], 'author': p.get('author','')} for p in all_xhs_posts], ensure_ascii=False, indent=2)}
+{json.dumps([{'title': p.get('title',''), 'content': p.get('content','')[:300], 'author': p.get('author','')} for p in all_xhs_posts], ensure_ascii=False, indent=2)}
 
 评论样本：
 {json.dumps([[{'user': c.get('user',''), 'text': c.get('text','')} for c in (p.get('comments', [])[:3])] for p in all_xhs_posts[:3]], ensure_ascii=False, indent=2)}
@@ -923,40 +918,33 @@ async def scout_and_build(
 JSON 输出：
 {{"insights": ["洞察1", "洞察2", "洞察3", "洞察4"]}}"""
 
-                try:
-                    insights_result = await _llm_complete(
-                        [{"role": "user", "content": xhs_summary_prompt}],
-                        temperature=0.6,
-                        json_mode=True,
-                    )
-                    insights_data = json.loads(insights_result)
-                    insights = insights_data.get("insights", [])
-                except Exception:
-                    insights = [f"在{research_t}领域，该用户群体表现出典型特征"]
+                    try:
+                        insights_result = await _llm_complete(
+                            [{"role": "user", "content": xhs_summary_prompt}],
+                            temperature=0.6,
+                            json_mode=True,
+                        )
+                        insights_data = json.loads(insights_result)
+                        insights = insights_data.get("insights", [])
+                    except Exception:
+                        insights = [f"在{research_topic}领域，该用户群体表现出典型特征"]
 
-                if insights:
-                    await persona_queue.put((
-                        'persona_insights',
+                    if insights:
+                        yield f"data: {json.dumps({'type': 'persona_insights', 'persona_id': p_id, 'persona_name': p_name, 'insights': insights}, ensure_ascii=False)}\n\n"
+
+                    # ── 人设增强 ─────────────────────────────────────────
+                    posts_for_rebuild = [
                         {
-                            'persona_id': p_id,
-                            'persona_name': p_name,
-                            'insights': insights,
+                            'platform': p.get('platform', '小红书'),
+                            'title': p.get('title', ''),
+                            'content': p.get('content', '')[:500],
+                            'author': p.get('author', ''),
+                            'comments': p.get('comments', [])[:5],
                         }
-                    ))
+                        for p in all_xhs_posts
+                    ]
 
-                # ── 人设增强 ─────────────────────────────────────────
-                posts_for_rebuild = [
-                    {
-                        'platform': p.get('platform', '小红书'),
-                        'title': p.get('title', ''),
-                        'content': p.get('content', '')[:500],
-                        'author': p.get('author', ''),
-                        'comments': p.get('comments', [])[:5],
-                    }
-                    for p in all_xhs_posts
-                ]
-
-                rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
+                    rebuild_prompt = f"""你是一位资深用户研究员，正在用真实社交媒体数据重构用户画像。
 
 原始人设：
 {json.dumps(p_data, ensure_ascii=False, indent=2)}
@@ -974,139 +962,94 @@ JSON 输出：
 
 JSON 输出（在原有字段上修改，并添加 "scouted_updates" 字段说明修改原因）："""
 
-                try:
-                    updated_str = await _llm_complete(
-                        [{"role": "user", "content": rebuild_prompt}],
-                        temperature=0.6,
-                        json_mode=True,
-                    )
-                    updated_persona = json.loads(updated_str)
-                    updated_persona["id"] = p_id
-                    updated_persona["source"] = "scouted"
-                    updated_persona["scout_keywords"] = persona_kw_list
-                    updated_persona["xhs_posts_count"] = len(all_xhs_posts)
-                    # 混合方案核心字段：洞察摘要 + 真实评论精华
-                    updated_persona["scout_insights"] = insights
-                    updated_persona["scout_comments"] = scout_comments
-                    # 原始帖子元数据（供报告溯源引用）
-                    updated_persona["scout_posts_meta"] = [
-                        {
-                            'title': p.get('title', ''),
-                            'author': p.get('author', ''),
-                            'link': p.get('link', ''),
-                            'platform': '小红书',
-                        }
-                        for p in all_xhs_posts
-                    ]
-
-                    from app.core.database import AsyncSessionLocal
-                    async with AsyncSessionLocal() as new_db:
-                        persona_to_update = await new_db.get(StudyPersona, p_id)
-                        if persona_to_update:
-                            persona_to_update.persona_data = updated_persona
-                            persona_to_update.source = "scouted"
-                            await new_db.commit()
-
-                    await persona_queue.put((
-                        'updated_persona',
-                        {'persona': updated_persona, 'persona_id': p_id}
-                    ))
-                except Exception as e:
-                    logger.error(f"人设重构失败: {e}")
-
-                # ── 保存真实帖子到数据库 ─────────────────────────────────────
-                try:
-                    from app.core.database import AsyncSessionLocal
-                    async with AsyncSessionLocal() as new_db:
-                        posts_data = [
-                            {
-                                'platform': '小红书',
-                                'title': post.get('title', ''),
-                                'content': post.get('content', ''),
-                                'author': post.get('author', ''),
-                                'link': post.get('link', ''),
-                                'comments': post.get('comments', [])[:10],
-                                'is_real': True,
-                            }
-                            for post in all_xhs_posts
-                        ]
-                        scout_result = ScoutResult(
-                            study_id=request.study_id,
-                            persona_id=p_id,
-                            keywords=[combined_kw],
-                            platforms=['小红书'],
-                            posts=posts_data,
-                            insights=insights,
+                    try:
+                        updated_str = await _llm_complete(
+                            [{"role": "user", "content": rebuild_prompt}],
+                            temperature=0.6,
+                            json_mode=True,
                         )
-                        new_db.add(scout_result)
-                        await new_db.commit()
+                        updated_persona = json.loads(updated_str)
+                        updated_persona["id"] = p_id
+                        updated_persona["source"] = "scouted"
+                        updated_persona["scout_keywords"] = persona_kw_list
+                        updated_persona["xhs_posts_count"] = len(all_xhs_posts)
+                        updated_persona["scout_insights"] = insights
+                        updated_persona["scout_comments"] = scout_comments
+                        updated_persona["scout_posts_meta"] = [
+                            {
+                                'title': p.get('title', ''),
+                                'author': p.get('author', ''),
+                                'link': p.get('link', ''),
+                                'platform': '小红书',
+                            }
+                            for p in all_xhs_posts
+                        ]
+
+                        from app.core.database import AsyncSessionLocal
+                        async with AsyncSessionLocal() as new_db:
+                            persona_to_update = await new_db.get(StudyPersona, p_id)
+                            if persona_to_update:
+                                persona_to_update.persona_data = updated_persona
+                                persona_to_update.source = "scouted"
+                                await new_db.commit()
+
+                        yield f"data: {json.dumps({'type': 'updated_persona', 'persona': updated_persona, 'persona_id': p_id}, ensure_ascii=False)}\n\n"
+                    except Exception as e:
+                        logger.error(f"人设重构失败: {e}")
+
+                    # ── 保存真实帖子到数据库 ─────────────────────────────────────
+                    try:
+                        from app.core.database import AsyncSessionLocal
+                        async with AsyncSessionLocal() as new_db:
+                            posts_data = [
+                                {
+                                    'platform': '小红书',
+                                    'title': post.get('title', ''),
+                                    'content': post.get('content', ''),
+                                    'author': post.get('author', ''),
+                                    'link': post.get('link', ''),
+                                    'comments': post.get('comments', [])[:10],
+                                    'is_real': True,
+                                }
+                                for post in all_xhs_posts
+                            ]
+                            scout_result = ScoutResult(
+                                study_id=request.study_id,
+                                persona_id=p_id,
+                                keywords=[combined_kw],
+                                platforms=['小红书'],
+                                posts=posts_data,
+                                insights=insights,
+                            )
+                            new_db.add(scout_result)
+                            await new_db.commit()
+                    except Exception as e:
+                        logger.error(f"保存侦察结果失败: {e}")
+
                 except Exception as e:
-                    logger.error(f"保存侦察结果失败: {e}")
+                    logger.error(f"人设 {p_name} 侦察失败: {e}")
+                    task_success = False
+                    error_message = str(e)
 
-            finally:
-                # 即使中间任何地方抛出异常，也要发出完成事件，防止 SSE 卡死
-                logger.info(f"scout_persona 完成: {p_name}")
-                _cnt = len(all_xhs_posts)
-                await persona_queue.put(('persona_scout_done', {
-                    'persona_id': p_id,
-                    'persona_name': p_name,
-                    'posts_count': _cnt,
-                    'total': _cnt,
-                }))
+                finally:
+                    # 发送完成事件
+                    logger.info(f"scout_persona 完成: {p_name}")
+                    yield f"data: {json.dumps({'type': 'persona_scout_done', 'persona_id': p_id, 'persona_name': p_name, 'posts_count': len(all_xhs_posts), 'total': len(all_xhs_posts)}, ensure_ascii=False)}\n\n"
 
-        # ── 并行启动所有人设的侦察任务 ──────────────────────────────
-        persona_queues: dict[str, asyncio.Queue] = {}
-        scout_tasks: list[asyncio.Task] = []
+            # ========== 关闭浏览器会话 ==========
+            try:
+                await close_study_browser(request.study_id)
+            except Exception as e:
+                logger.warning(f"关闭浏览器会话失败: {e}")
 
-        for persona_id in persona_ids_to_update:
-            persona = next((p for p in existing_personas if p.id == persona_id), None)
-            if not persona:
-                continue
-            q: asyncio.Queue = asyncio.Queue()
-            persona_queues[persona_id] = q
-            task = asyncio.create_task(scout_persona(persona, q))
-            scout_tasks.append(task)
+        except Exception as e:
+            logger.error(f"社媒侦察任务失败: {e}")
+            task_success = False
+            error_message = str(e)
 
-        # ── 主循环：实时收集各人设的事件并 yield ───────────────────
-        pending_tasks = set(scout_tasks)
-        while pending_tasks:
-            for p_id, q in persona_queues.items():
-                while not q.empty():
-                    evt_type, evt_data = await q.get()
-                    if evt_type == 'post':
-                        all_posts.append(evt_data['post'])
-                        yield f"data: {json.dumps({'type': 'post', **evt_data}, ensure_ascii=False)}\n\n"
-                    elif evt_type == 'persona_scout_start':
-                        yield f"data: {json.dumps({'type': 'persona_scout_start', **evt_data}, ensure_ascii=False)}\n\n"
-                    elif evt_type == 'persona_insights':
-                        yield f"data: {json.dumps({'type': 'persona_insights', **evt_data}, ensure_ascii=False)}\n\n"
-                    elif evt_type == 'updated_persona':
-                        yield f"data: {json.dumps({'type': 'updated_persona', **evt_data}, ensure_ascii=False)}\n\n"
-                    elif evt_type == 'persona_scout_done':
-                        yield f"data: {json.dumps({'type': 'persona_scout_done', **evt_data}, ensure_ascii=False)}\n\n"
-
-            # 检查已完成的任务
-            done_tasks = {t for t in pending_tasks if t.done()}
-            for t in done_tasks:
-                # 把该任务关联队列中剩余的事件全部读完
-                for p_id, q in persona_queues.items():
-                    while not q.empty():
-                        evt_type, evt_data = await q.get()
-                        if evt_type == 'post':
-                            all_posts.append(evt_data['post'])
-                            yield f"data: {json.dumps({'type': 'post', **evt_data}, ensure_ascii=False)}\n\n"
-                        elif evt_type == 'persona_scout_start':
-                            yield f"data: {json.dumps({'type': 'persona_scout_start', **evt_data}, ensure_ascii=False)}\n\n"
-                        elif evt_type == 'persona_insights':
-                            yield f"data: {json.dumps({'type': 'persona_insights', **evt_data}, ensure_ascii=False)}\n\n"
-                        elif evt_type == 'updated_persona':
-                            yield f"data: {json.dumps({'type': 'updated_persona', **evt_data}, ensure_ascii=False)}\n\n"
-                        elif evt_type == 'persona_scout_done':
-                            yield f"data: {json.dumps({'type': 'persona_scout_done', **evt_data}, ensure_ascii=False)}\n\n"
-                pending_tasks.discard(t)
-
-            if pending_tasks:
-                await asyncio.sleep(0.05)  # 避免 CPU 空转
+        finally:
+            # ========== 释放执行槽位 ==========
+            await task_queue.release_slot(task, success=task_success, error_message=error_message)
 
         # ── 保存整体侦察结果 ──────────────────────────────────────
         from app.core.database import AsyncSessionLocal
@@ -1970,7 +1913,7 @@ async def _run_auto_research(
 
             # 生成专属关键词
             kw_prompt =keyword_prompt = f"""
-你是资深消费市场研究员。请为“小红书市场调研”生成搜索词，用来找到真实用户的讨论、吐槽、种草、避坑、对比和使用反馈。
+你是资深消费市场研究员。请为"小红书市场调研"生成搜索词，用来找到真实用户的讨论、吐槽、种草、避坑、对比和使用反馈。
 
 原始项目/产品信息：
 {study.user_request}
@@ -2426,3 +2369,93 @@ async def get_auto_research_status(
                 "status": "pending",
                 "message": "任务等待执行...",
             })
+
+
+# ── 排队状态 API ─────────────────────────────────────────────────────
+
+class QueueStatusRequest(BaseModel):
+    """队列状态查询请求"""
+    study_id: str
+
+
+@router.get("/queue-status")
+async def get_queue_status(
+    study_id: str = "",
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    查询任务队列状态
+
+    返回：
+    - 当前队列位置
+    - 状态（排队中/执行中）
+    """
+    task = task_queue.get_user_task(current_user.id)
+
+    if not task:
+        return ApiResponse.ok({
+            "status": "not_in_queue",
+            "message": "任务不在队列中",
+        })
+
+    queue_status = task_queue.get_queue_status()
+
+    return ApiResponse.ok({
+        "task_id": task.task_id,
+        "study_id": task.study_id,
+        "status": task.status.value,
+        "queue_position": task.queue_position if task.status == TaskStatus.QUEUED else None,
+        "created_at": task.created_at.isoformat(),
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "queue_info": queue_status,
+    })
+
+
+@router.post("/queue-status-stream")
+async def queue_status_stream(
+    request: QueueStatusRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    订阅队列状态变化（SSE 流）
+
+    用于实时推送排队位置变化
+    """
+    task = task_queue.get_user_task(current_user.id)
+
+    if not task:
+        # 如果没有现有任务，创建一个临时任务用于订阅
+        # 但如果 study_id 不匹配，返回错误
+        existing_task = task_queue.get_task(request.study_id)
+        if not existing_task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    async def stream_generator():
+        target_task = task or task_queue.get_task(request.study_id)
+        if not target_task:
+            yield f"data: {json.dumps({'type': 'error', 'message': '任务不存在'}, ensure_ascii=False)}\n\n"
+            return
+
+        try:
+            while True:
+                # 从任务的事件队列获取状态更新
+                try:
+                    event = await asyncio.wait_for(target_task.event_queue.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                    # 如果任务已完成或失败，结束流
+                    if event.get('status') in ['completed', 'failed', 'cancelled', 'running']:
+                        break
+
+                except asyncio.TimeoutError:
+                    # 发送心跳
+                    yield f"data: {json.dumps({'type': 'heartbeat'}, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info(f"[QueueStatus] 客户端断开连接: user_id={current_user.id}")
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )

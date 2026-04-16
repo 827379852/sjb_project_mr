@@ -1,6 +1,13 @@
 """
 FastAPI 应用入口
 """
+import asyncio
+import sys
+
+# Windows 环境下 Playwright 需要使用 ProactorEventLoop
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +26,15 @@ async def lifespan(app: FastAPI):
     logger.info(f"   Agent 后端: {settings.AGENT_BACKEND}")
     await init_db()
     logger.info("✅ 数据库初始化完成")
+
+    # 初始化任务队列（从数据库加载配置）
+    try:
+        from app.services.task_queue import task_queue
+        await task_queue.initialize()
+        logger.info("✅ 任务队列初始化完成")
+    except Exception as e:
+        logger.warning(f"任务队列初始化失败: {e}")
+
     yield
     logger.info("👋 服务关闭")
 

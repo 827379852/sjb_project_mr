@@ -4,12 +4,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
+from typing import Optional
 
 from app.core.database import get_db
 from app.core.response import ApiResponse
 from app.core.security import get_password_hash
 from app.models.user import User, DEFAULT_CREDITS, TASK_COST_CREDITS
 from app.models.credit_log import CreditLog
+from app.models.system_config import SystemConfig
 from app.schemas.user import UserOut, UserUpdate
 from app.schemas.credit_log import CreditLogOut, CreditLogListResponse
 from app.dependencies.auth import get_current_superuser
@@ -291,3 +294,102 @@ async def list_credit_logs(
         "page": page,
         "page_size": page_size,
     })
+
+
+# ── 系统配置管理 ─────────────────────────────────────────────────────
+
+class SystemConfigUpdate(BaseModel):
+    """系统配置更新请求"""
+    value: str
+    description: Optional[str] = None
+
+
+class SystemConfigOut(BaseModel):
+    """系统配置输出"""
+    id: str
+    key: str
+    value: str
+    description: str
+    config_type: str
+    updated_at: str
+
+
+@router.get("/system-configs", response_model=ApiResponse)
+async def list_system_configs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    """获取所有系统配置"""
+    result = await db.execute(select(SystemConfig).order_by(SystemConfig.key))
+    configs = result.scalars().all()
+
+    return ApiResponse.ok([SystemConfigOut(
+        id=c.id,
+        key=c.key,
+        value=c.value,
+        description=c.description or "",
+        config_type=c.config_type,
+        updated_at=c.updated_at.isoformat() if c.updated_at else "",
+    ) for c in configs])
+
+
+@router.put("/system-configs/{key}", response_model=ApiResponse)
+async def update_system_config(
+    key: str,
+    data: SystemConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    """更新系统配置"""
+    result = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        # 创建新配置
+        config = SystemConfig(key=key, value=data.value, description=data.description or "")
+        db.add(config)
+    else:
+        config.value = data.value
+        if data.description is not None:
+            config.description = data.description
+
+    await db.flush()
+    await db.refresh(config)
+
+    # 如果更新的是最大并行用户数，同步更新任务队列
+    if key == "max_concurrent_users":
+        try:
+            from app.services.task_queue import task_queue
+            await task_queue.update_max_concurrent(int(data.value))
+        except Exception as e:
+            # 如果任务队列还未初始化，忽略错误
+            pass
+
+    return ApiResponse.ok(SystemConfigOut(
+        id=config.id,
+        key=config.key,
+        value=config.value,
+        description=config.description or "",
+        config_type=config.config_type,
+        updated_at=config.updated_at.isoformat() if config.updated_at else "",
+    ))
+
+
+# ── 队列状态查看 ─────────────────────────────────────────────────────
+
+@router.get("/queue-status", response_model=ApiResponse)
+async def get_queue_status(
+    current_user: User = Depends(get_current_superuser),
+):
+    """获取任务队列状态"""
+    try:
+        from app.services.task_queue import task_queue
+        return ApiResponse.ok(task_queue.get_queue_status())
+    except Exception as e:
+        return ApiResponse.ok({
+            'max_concurrent': 4,
+            'queued': 0,
+            'running': 0,
+            'total_tasks': 0,
+            'error': str(e),
+        })

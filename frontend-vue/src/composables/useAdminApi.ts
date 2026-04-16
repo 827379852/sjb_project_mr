@@ -65,7 +65,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: '请求失败' }))
-    throw new Error(error.detail || '请求失败')
+    // 处理 FastAPI 的验证错误格式
+    const errorMsg = error.detail?.msg || error.detail || JSON.stringify(error.detail || error)
+    throw new Error(errorMsg)
   }
 
   const data = await response.json()
@@ -129,6 +131,29 @@ export function useAdminApi() {
       if (userId) url += `&user_id=${userId}`
       if (logType) url += `&log_type=${logType}`
       return request<CreditLogListResponse>(url)
+    },
+
+    // 获取系统配置列表
+    async getSystemConfigs(): Promise<any[]> {
+      return request<any[]>(`${API_BASE}/system-configs`)
+    },
+
+    // 更新系统配置
+    async updateSystemConfig(key: string, value: string): Promise<any> {
+      return request<any>(`${API_BASE}/system-configs/${key}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      })
+    },
+
+    // 获取队列状态
+    async getQueueStatus(): Promise<{
+      max_concurrent: number
+      queued: number
+      running: number
+      total_tasks: number
+    }> {
+      return request(`${API_BASE}/queue-status`)
     },
   }
 }

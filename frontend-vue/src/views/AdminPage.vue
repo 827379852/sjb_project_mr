@@ -14,6 +14,7 @@
     <div class="tabs">
       <button :class="['tab', activeTab === 'users' ? 'active' : '']" @click="activeTab = 'users'">用户管理</button>
       <button :class="['tab', activeTab === 'credits' ? 'active' : '']" @click="activeTab = 'credits'">积分记录</button>
+      <button :class="['tab', activeTab === 'system' ? 'active' : '']" @click="activeTab = 'system'">系统配置</button>
     </div>
 
     <!-- 用户管理 Tab -->
@@ -214,6 +215,55 @@
         <button :disabled="creditLogPage >= creditLogTotalPages" @click="changeCreditLogPage(creditLogPage + 1)">下一页</button>
       </div>
     </div>
+
+    <!-- 系统配置 Tab -->
+    <div v-show="activeTab === 'system'" class="system-section">
+      <h2>系统配置</h2>
+
+      <!-- 队列状态卡片 -->
+      <div class="queue-status-card">
+        <div class="card-header">
+          <h3>任务队列状态</h3>
+        </div>
+        <div class="queue-stats">
+          <div class="queue-stat">
+            <div class="stat-value">{{ queueStatus.running || 0 }}</div>
+            <div class="stat-label">执行中</div>
+          </div>
+          <div class="queue-stat">
+            <div class="stat-value">{{ queueStatus.queued || 0 }}</div>
+            <div class="stat-label">排队中</div>
+          </div>
+          <div class="queue-stat">
+            <div class="stat-value">{{ queueStatus.max_concurrent || 4 }}</div>
+            <div class="stat-label">最大并行</div>
+          </div>
+        </div>
+        <button @click="loadQueueStatus" class="btn-refresh">刷新状态</button>
+      </div>
+
+      <!-- 配置卡片 -->
+      <div class="config-cards">
+        <div class="config-card" v-for="config in systemConfigs" :key="config.key">
+          <div class="config-header">
+            <div class="config-title">{{ getConfigLabel(config.key) }}</div>
+            <div class="config-desc">{{ config.description }}</div>
+          </div>
+          <div class="config-body">
+            <input
+              :type="config.config_type === 'int' ? 'number' : 'text'"
+              v-model="config.value"
+              :min="config.key === 'max_concurrent_users' ? 1 : undefined"
+              :max="config.key === 'max_concurrent_users' ? 10 : undefined"
+              @change="updateConfig(config.key, config.value)"
+            />
+          </div>
+          <div class="config-footer">
+            <span class="config-updated">更新于 {{ formatDate(config.updated_at) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -266,6 +316,14 @@ const creditLogTotal = ref(0)
 const creditLogPage = ref(1)
 const creditLogType = ref('')
 const creditLogsLoading = ref(false)
+
+// 系统配置
+const systemConfigs = ref<any[]>([])
+const queueStatus = ref({
+  running: 0,
+  queued: 0,
+  max_concurrent: 4,
+})
 
 // 计算属性
 const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
@@ -376,6 +434,9 @@ function getLogTypeLabel(type: string): string {
 watch(activeTab, (newTab) => {
   if (newTab === 'credits') {
     loadCreditLogs()
+  } else if (newTab === 'system') {
+    loadSystemConfigs()
+    loadQueueStatus()
   }
 })
 
@@ -425,6 +486,46 @@ async function deleteUserConfirm(user: any) {
   } catch (e: any) {
     alert('删除失败: ' + e.message)
   }
+}
+
+// 系统配置相关
+async function loadSystemConfigs() {
+  try {
+    systemConfigs.value = await adminApi.getSystemConfigs()
+  } catch (e) {
+    console.error('加载系统配置失败', e)
+  }
+}
+
+async function loadQueueStatus() {
+  try {
+    queueStatus.value = await adminApi.getQueueStatus()
+  } catch (e) {
+    console.error('加载队列状态失败', e)
+  }
+}
+
+async function updateConfig(key: string, value: any) {
+  try {
+    await adminApi.updateSystemConfig(key, String(value))
+    // 更新成功，重新加载
+    await loadSystemConfigs()
+    if (key === 'max_concurrent_users') {
+      await loadQueueStatus()
+    }
+  } catch (e: any) {
+    console.error('更新配置失败', e)
+    alert('更新配置失败: ' + (e.message || JSON.stringify(e)))
+  }
+}
+
+function getConfigLabel(key: string): string {
+  const labels: Record<string, string> = {
+    'max_concurrent_users': '最大并行用户数',
+    'xhs_max_posts_per_persona': '每个人设最大帖子数',
+    'xhs_max_comments_per_post': '每篇帖子最大评论数',
+  }
+  return labels[key] || key
 }
 
 // 初始化
@@ -851,5 +952,116 @@ onMounted(() => {
 .amount.negative {
   color: #f5222d;
   font-weight: 600;
+}
+
+/* 系统配置 */
+.system-section {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  padding: 24px;
+}
+
+.system-section h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 20px 0;
+  color: #1a1a1a;
+}
+
+.queue-status-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  padding: 24px;
+  color: white;
+  margin-bottom: 24px;
+}
+
+.queue-status-card .card-header h3 {
+  margin: 0 0 20px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.queue-stats {
+  display: flex;
+  gap: 40px;
+}
+
+.queue-stat {
+  text-align: center;
+}
+
+.queue-stat .stat-value {
+  font-size: 36px;
+  font-weight: 700;
+}
+
+.queue-stat .stat-label {
+  font-size: 14px;
+  opacity: 0.9;
+  margin-top: 4px;
+}
+
+.btn-refresh {
+  margin-top: 16px;
+  padding: 8px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-refresh:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.config-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.config-card {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 20px;
+  border: 1px solid #eee;
+}
+
+.config-header {
+  margin-bottom: 12px;
+}
+
+.config-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.config-desc {
+  font-size: 13px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.config-body input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.config-footer {
+  margin-top: 8px;
+}
+
+.config-updated {
+  font-size: 12px;
+  color: #999;
 }
 </style>
